@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-caliper"
+version = "0.1.0"
+description = "Measurement-science evaluation for LLMs: adaptive IRT testing, uncertainty-aware judging, robustness, calibration, and contamination probes."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Abhi Mittal" }]
+keywords = [
+  "llm", "evaluation", "item-response-theory", "adaptive-testing",
+  "llm-as-judge", "robustness", "calibration", "contamination",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "requests>=2.28",
+]
+
+[project.optional-dependencies]
+hf = ["huggingface_hub>=0.24"]
+space = ["gradio>=4.36", "huggingface_hub>=0.24"]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.scripts]
+caliper = "caliper.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/aabhimittal/LLM-evaluation"
+Documentation = "https://github.com/aabhimittal/LLM-evaluation/blob/main/METHODOLOGY.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/caliper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
