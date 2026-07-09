@@ -2,13 +2,14 @@
 
 from caliper.adapters.base import ChatMessage, ModelAdapter
 from caliper.adapters.replay import ReplayAdapter
-from caliper.adapters.simulate import SimulatedJudge, SimulatedSubject
+from caliper.adapters.simulate import SimulatedJudge, SimulatedRAGSubject, SimulatedSubject
 
 __all__ = [
     "ChatMessage",
     "ModelAdapter",
     "ReplayAdapter",
     "SimulatedJudge",
+    "SimulatedRAGSubject",
     "SimulatedSubject",
     "make_adapter",
 ]

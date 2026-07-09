@@ -1,0 +1,156 @@
+{
+ "name": "rag-demo-v1",
+ "source": "hand-authored original passages (demo set; not from any benchmark)",
+ "samples": [
+  {
+   "id": "demo/water-boiling",
+   "question": "At what temperature does water boil at sea level, and why does it change with altitude?",
+   "contexts": [
+    "At standard atmospheric pressure at sea level, pure water boils at one hundred degrees Celsius, which equals two hundred twelve degrees Fahrenheit.",
+    "Boiling occurs when the vapour pressure of a liquid equals the surrounding pressure, so at higher altitudes where air pressure is lower, water boils at a lower temperature."
+   ],
+   "reference_answer": "Water boils at 100 degrees Celsius at sea level; the boiling point drops at higher altitude because atmospheric pressure is lower.",
+   "tags": ["physics", "everyday-science"]
+  },
+  {
+   "id": "demo/photosynthesis",
+   "question": "What raw materials do plants use during photosynthesis and what do they produce?",
+   "contexts": [
+    "During photosynthesis, green plants absorb carbon dioxide from the air and water from the soil, using energy from sunlight captured by chlorophyll.",
+    "The process converts these raw materials into glucose, a sugar the plant uses for energy, and releases oxygen as a by-product into the atmosphere."
+   ],
+   "reference_answer": "Plants use carbon dioxide, water and sunlight to produce glucose and release oxygen.",
+   "tags": ["biology"]
+  },
+  {
+   "id": "demo/great-wall",
+   "question": "What was the main purpose of building the Great Wall of China?",
+   "contexts": [
+    "The Great Wall of China was built and rebuilt over many centuries by successive dynasties primarily to defend the northern frontier against nomadic invasions and raids.",
+    "Beyond defence, the wall also served to control trade along the Silk Road and to regulate the movement of people crossing the border."
+   ],
+   "reference_answer": "It was built mainly to defend China's northern border against nomadic invasions, and also helped control trade and movement.",
+   "tags": ["history"]
+  },
+  {
+   "id": "demo/insulin",
+   "question": "Which organ produces insulin and what does insulin do in the body?",
+   "contexts": [
+    "Insulin is a hormone produced by clusters of cells in the pancreas known as the islets of Langerhans.",
+    "Insulin regulates blood sugar by allowing cells throughout the body to take up glucose from the bloodstream and use it for energy."
+   ],
+   "reference_answer": "The pancreas produces insulin, which lowers blood sugar by helping cells absorb glucose.",
+   "tags": ["biology", "health"]
+  },
+  {
+   "id": "demo/moon-phases",
+   "question": "What causes the phases of the Moon that we observe from Earth?",
+   "contexts": [
+    "The phases of the Moon are caused by the changing angle from which we see the illuminated half of the Moon as it orbits the Earth.",
+    "The Moon does not produce its own light; it reflects sunlight, and how much of the lit side faces Earth determines whether we see a full, half, or crescent moon."
+   ],
+   "reference_answer": "Moon phases result from seeing different portions of the sunlit half of the Moon as it orbits Earth.",
+   "tags": ["astronomy"]
+  },
+  {
+   "id": "demo/roman-concrete",
+   "question": "Why has some ancient Roman concrete proven so durable over two thousand years?",
+   "contexts": [
+    "Ancient Roman concrete owes much of its durability to a mixture of volcanic ash, lime, and seawater that triggered chemical reactions strengthening the material over time.",
+    "Researchers have found that lime clasts in the concrete could dissolve and recrystallise, effectively allowing the material to heal small cracks that formed."
+   ],
+   "reference_answer": "Roman concrete combined volcanic ash, lime and seawater, and its lime clasts let it self-heal cracks, making it very durable.",
+   "tags": ["engineering", "history"]
+  },
+  {
+   "id": "demo/rainbow",
+   "question": "How is a rainbow formed in the sky after rain?",
+   "contexts": [
+    "A rainbow forms when sunlight enters raindrops and is refracted, reflected off the back of the drop, and refracted again as it exits, separating the light into its colours.",
+    "Because each colour bends by a slightly different amount, the light spreads into a spectrum from red on the outer edge to violet on the inner edge of the arc."
+   ],
+   "reference_answer": "Rainbows form when sunlight is refracted and reflected inside raindrops, splitting white light into a spectrum of colours.",
+   "tags": ["physics", "optics"]
+  },
+  {
+   "id": "demo/printing-press",
+   "question": "Who is credited with inventing the movable-type printing press in Europe and roughly when?",
+   "contexts": [
+    "Johannes Gutenberg, a goldsmith from Mainz, is credited with introducing the movable-type printing press to Europe around the middle of the fifteenth century.",
+    "His press dramatically lowered the cost of producing books and helped spread literacy and new ideas across Europe during the following decades."
+   ],
+   "reference_answer": "Johannes Gutenberg introduced the European movable-type printing press around 1440s (mid-fifteenth century).",
+   "tags": ["history", "technology"]
+  },
+  {
+   "id": "demo/blood-types",
+   "question": "What determines a person's ABO blood type?",
+   "contexts": [
+    "A person's ABO blood type is determined by the presence or absence of specific antigens, called A and B antigens, on the surface of their red blood cells.",
+    "Someone with only A antigens is type A, only B antigens is type B, both is type AB, and neither is type O; these are inherited from the parents."
+   ],
+   "reference_answer": "ABO blood type is set by which antigens (A, B, both, or neither) are present on red blood cells, inherited from parents.",
+   "tags": ["biology", "genetics"]
+  },
+  {
+   "id": "demo/tides",
+   "question": "What is the primary cause of ocean tides on Earth?",
+   "contexts": [
+    "Ocean tides are caused primarily by the gravitational pull of the Moon on the Earth's oceans, which raises a bulge of water on the side facing the Moon.",
+    "The Sun's gravity also contributes to tides, and when the Sun and Moon align their combined pull produces especially high spring tides."
+   ],
+   "reference_answer": "Tides are caused mainly by the Moon's gravitational pull, with the Sun contributing and reinforcing them during alignment.",
+   "tags": ["astronomy", "earth-science"]
+  },
+  {
+   "id": "demo/penicillin",
+   "question": "Who discovered penicillin and how did the discovery happen?",
+   "contexts": [
+    "Penicillin was discovered by the Scottish scientist Alexander Fleming in nineteen twenty-eight when he noticed that a mould contaminating a culture dish had killed the surrounding bacteria.",
+    "The mould, a species of Penicillium, produced a substance that inhibited bacterial growth, leading eventually to the development of the first widely used antibiotic."
+   ],
+   "reference_answer": "Alexander Fleming discovered penicillin in 1928 after noticing Penicillium mould killing bacteria on a culture dish.",
+   "tags": ["history", "medicine"]
+  },
+  {
+   "id": "demo/carbon-dating",
+   "question": "How does radiocarbon dating estimate the age of once-living material?",
+   "contexts": [
+    "Radiocarbon dating works by measuring the amount of carbon fourteen, a radioactive isotope, remaining in the material of a once-living organism.",
+    "Because carbon fourteen decays at a known and steady rate after death, comparing the remaining amount to the original gives an estimate of how long ago the organism died."
+   ],
+   "reference_answer": "It measures leftover radioactive carbon-14, which decays at a known rate, to estimate how long ago the organism died.",
+   "tags": ["chemistry", "archaeology"]
+  },
+  {
+   "id": "demo/volcano-types",
+   "question": "What makes a shield volcano different from a stratovolcano?",
+   "contexts": [
+    "A shield volcano is built from many layers of runny, low-viscosity lava that flows far before cooling, producing a broad, gently sloping dome.",
+    "A stratovolcano, by contrast, is built from alternating layers of thick lava and ash, giving it steep sides and a tendency toward explosive eruptions."
+   ],
+   "reference_answer": "Shield volcanoes form from runny lava into broad gentle domes, while stratovolcanoes form from thick lava and ash into steep, explosive cones.",
+   "tags": ["geology"]
+  },
+  {
+   "id": "demo/electric-current",
+   "question": "What is the difference between direct current and alternating current?",
+   "contexts": [
+    "In direct current, or DC, electric charge flows steadily in a single constant direction, as it does from a battery.",
+    "In alternating current, or AC, the direction of charge flow reverses periodically many times per second, which makes it easier to transmit over long distances at high voltage."
+   ],
+   "reference_answer": "DC flows steadily in one direction; AC reverses direction periodically and is easier to transmit over distance.",
+   "tags": ["physics", "electricity"]
+  },
+  {
+   "id": "demo/coral-bleaching",
+   "question": "What causes coral bleaching and why is it harmful to reefs?",
+   "contexts": [
+    "Coral bleaching occurs when stressed corals, often due to unusually warm water, expel the symbiotic algae living in their tissues that give them colour and food.",
+    "Without these algae the coral turns white and loses its main energy source, and if the stress continues for too long the coral can starve and die."
+   ],
+   "reference_answer": "Warm water stress makes corals expel their symbiotic algae, turning them white and depriving them of food, which can kill the reef.",
+   "tags": ["biology", "environment"]
+  }
+ ]
+}

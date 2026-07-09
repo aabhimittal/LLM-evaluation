@@ -10,6 +10,7 @@ import html
 import math
 
 from caliper.report.fingerprint import Fingerprint
+from caliper.rag.suite import RagReport
 
 _CSS = """
 :root {
@@ -245,6 +246,112 @@ def _reliability_svg(bins: list[dict], width: int = 420, height: int = 220) -> s
     )
     parts.append("</svg>")
     return "".join(parts)
+
+
+def _bar_chart(values: list[float], *, width: int = 420, height: int = 200,
+               y_label: str = "", aria: str = "bar chart") -> str:
+    """Simple vertical-bar chart for per-sample scores in [0, 1]."""
+    if not values:
+        return '<p class="note">No samples.</p>'
+    pad_l, pad_r, pad_t, pad_b = 40, 10, 12, 24
+    n = len(values)
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    gap = 2.0
+    bar_w = max((plot_w - gap * (n - 1)) / n, 1.0)
+
+    def sy(y: float) -> float:
+        return pad_t + (1.0 - y) * plot_h
+
+    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+             f'aria-label="{html.escape(aria)}">']
+    for frac in (0.0, 0.5, 1.0):
+        parts.append(
+            f'<line x1="{pad_l}" y1="{sy(frac):.1f}" x2="{width - pad_r}" y2="{sy(frac):.1f}" '
+            f'stroke="var(--grid)" stroke-width="1"/>'
+            f'<text x="{pad_l - 6}" y="{sy(frac) + 4:.1f}" text-anchor="end">{_fmt(frac, 1)}</text>'
+        )
+    for i, v in enumerate(values):
+        v = max(0.0, min(1.0, v))
+        x = pad_l + i * (bar_w + gap)
+        y = sy(v)
+        fill = "var(--critical)" if v < 0.5 else "var(--series)"
+        parts.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" '
+            f'height="{max(sy(0) - y, 1):.1f}" rx="1.5" fill="{fill}" opacity="0.85"/>'
+        )
+    if y_label:
+        parts.append(f'<text x="{pad_l}" y="{pad_t - 1}">{html.escape(y_label)}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_rag_html(report: RagReport, *, model_name: str = "model",
+                    bank_name: str = "") -> str:
+    """Self-contained HTML report for a RAG grounding run."""
+    f_lo, f_hi = report.faithfulness_ci95
+    r_lo, r_hi = report.answer_relevance_ci95
+    p_lo, p_hi = report.context_precision_ci95
+    per_sample_faith = [p["faithfulness"] for p in report.per_sample]
+
+    tiles = f"""
+    <div class="tiles">
+      <div class="tile"><div class="k">Faithfulness (claims supported)</div>
+        <div class="v">{_fmt(report.faithfulness)}</div>
+        <div class="d">95% CI {_fmt(f_lo)} … {_fmt(f_hi)} · {report.n_claims} claims</div></div>
+      <div class="tile"><div class="k">Answer relevance</div>
+        <div class="v">{_fmt(report.answer_relevance)}</div>
+        <div class="d">95% CI {_fmt(r_lo)} … {_fmt(r_hi)}</div></div>
+      <div class="tile"><div class="k">Context precision</div>
+        <div class="v">{_fmt(report.context_precision)}</div>
+        <div class="d">95% CI {_fmt(p_lo)} … {_fmt(p_hi)}</div></div>
+      <div class="tile"><div class="k">Hallucinated claims</div>
+        <div class="v">{report.n_unsupported_claims}</div>
+        <div class="d">of {report.n_claims} · verifier agreement {_fmt(report.mean_verifier_agreement)}</div></div>
+    </div>"""
+
+    unsup_rows = "".join(
+        f'<tr><td>{html.escape(str(e["sample_id"]))}</td>'
+        f'<td>{html.escape(str(e["claim"]))[:120]}</td></tr>'
+        for e in report.unsupported_examples[:15]
+    )
+    unsup_table = (
+        "<h2>Localized hallucinations — claims not supported by the context</h2>"
+        '<div class="card"><table><tr><th>sample</th><th>unsupported claim</th></tr>'
+        + unsup_rows + "</table></div>"
+        if unsup_rows else
+        '<div class="card"><div class="note">No unsupported claims — every claim '
+        "was entailed by the retrieved context.</div></div>"
+    )
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caliper RAG grounding · {html.escape(model_name)}</title>
+<style>{_CSS}</style></head>
+<body><div class="wrap">
+  <h1>Caliper RAG grounding — {html.escape(model_name)}</h1>
+  <div class="sub">{report.n_samples} samples{(" · bank " + html.escape(bank_name)) if bank_name else ""}
+    · faithfulness, answer &amp; context relevance, each with a 95% bootstrap CI</div>
+  {tiles}
+  <div class="cards">
+    <div class="card"><h3>Faithfulness by sample</h3>
+      <div class="note">fraction of each answer's claims supported by the context;
+        red bars fall below 0.5</div>
+      {_bar_chart(per_sample_faith, y_label="faithfulness", aria="Faithfulness by sample")}</div>
+    <div class="card"><h3>What sets this apart</h3>
+      <div class="note">Ragas/TruLens report one point number per metric. Caliper
+        ships every metric with a confidence interval and localizes each
+        unsupported claim to the exact sentence, so a hallucination is an
+        address, not a lower score.</div></div>
+  </div>
+  {unsup_table}
+  <div class="foot">Generated by <b>llm-caliper</b> — faithfulness is measured by
+    decomposing each answer into atomic claims and verifying each against the
+    retrieved context with a sampled NLI judge; all intervals are 95% bootstrap.
+    The verifier is itself a model — read the unsupported claims, do not trust the
+    aggregate alone.</div>
+</div></body></html>"""
 
 
 def render_html(fp: Fingerprint) -> str:
