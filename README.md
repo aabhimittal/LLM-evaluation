@@ -23,6 +23,7 @@ is audited for bias, and memorization is probed rather than assumed away.
 | Assume the benchmark is unseen | **Contamination probes**: continuation and option-recall tests for memorization |
 | Score the phrasing that ships | **Metamorphic robustness**: paraphrase, typos, homoglyphs, distractors, option shuffling — same meaning, same answer? |
 | Ignore confidence | **Calibration**: ECE, Brier, risk–coverage — does the model know what it doesn't know? |
+| RAG faithfulness/relevance as one point score (Ragas, TruLens) | **RAG grounding with uncertainty**: claim-level faithfulness with a bootstrap CI, and each unsupported claim *localized* to its sentence — a hallucination is an address, not a lower number |
 
 The output is a **fingerprint** — five dimensions with uncertainty — not a single number:
 
@@ -55,6 +56,13 @@ caliper run --adapter openai --model gpt-4o-mini --token $OPENAI_API_KEY
 caliper compare --adapter hf --judge-model meta-llama/Llama-3.3-70B-Instruct \
     --models Qwen/Qwen2.5-7B-Instruct microsoft/Phi-3.5-mini-instruct \
     --prompts examples/prompts.txt
+
+# RAG grounding — faithfulness & relevance with confidence intervals.
+# Offline demo: inject a known 30% hallucination rate and watch it get recovered,
+# with each fabricated claim localized to its sample:
+caliper rag --adapter simulated --hallucination-rate 0.3 --n-samples 10
+# A real model on your own RAG bank (feature-extraction embeddings for relevance):
+caliper rag --adapter hf --model Qwen/Qwen2.5-7B-Instruct --rag-bank my_rag.json
 ```
 
 `caliper run --suite fingerprint` writes a JSON report and a self-contained HTML
@@ -93,9 +101,15 @@ flowchart LR
 - **Robustness / Calibration / Contamination** (`caliper.robustness`, `.calibration`,
   `.contamination`) — see [METHODOLOGY.md](METHODOLOGY.md) for the math and the honest
   caveats of each probe.
+- **RAG grounding** (`caliper.rag`) — decomposes an answer into atomic claims, verifies
+  each against the retrieved context with a sampled NLI judge, and reports faithfulness,
+  answer relevance and context precision *each with a bootstrap CI* — plus the list of
+  unsupported claims (hallucinations localized to the sentence). A dependency-light native
+  implementation; the optional `[rag]` extra bridges to real Ragas/TruLens
+  (`caliper.rag.bridge`) when you want the standard numbers too.
 - **Everything is testable against ground truth**: `SimulatedSubject` has a known θ,
   calibration skew, robustness and contamination status; the test suite verifies each
-  estimator recovers what was injected (`tests/`, 36 tests, no network).
+  estimator recovers what was injected (`tests/`, 47 tests, no network).
 
 ### A note on the bundled item bank
 
@@ -113,13 +127,15 @@ This honesty matters: adaptive selection is only as good as the item parameters.
 
 ## The Space
 
-The [Hugging Face Space](https://huggingface.co/spaces/abhimittal/caliper) has four tabs:
+The [Hugging Face Space](https://huggingface.co/spaces/abhimittal/caliper) has five tabs:
 
 1. **📈 Adaptive ability** — watch θ converge item by item, CI shrinking live
 2. **⚖️ Judge lab** — inject position/verbosity bias into a demo judge and watch the
    audit catch it; or run a real judge with your token
 3. **🌀 Robustness** — preview perturbations, run the invariance suite
 4. **🫆 Full fingerprint** — the whole battery + downloadable JSON/HTML report
+5. **🔗 RAG grounding** — inject a hallucination rate, watch faithfulness recover it,
+   and see each unsupported claim localized — with confidence intervals throughout
 
 Demo mode runs entirely on simulated subjects (no token, no cost). Live mode uses your
 HF token against Inference Providers (`chat-completion`), session-only.
@@ -134,9 +150,11 @@ src/caliper/
   robustness/      metamorphic perturbations + invariance suite
   calibration/     ECE, Brier, risk–coverage
   contamination/   continuation & option-recall probes, n-gram screening
-  report/          fingerprint assembly, self-contained HTML report
+  rag/             claim-level faithfulness + answer/context relevance (with CIs),
+                   optional Ragas/TruLens bridge, bundled demo RAG bank
+  report/          fingerprint assembly, self-contained HTML reports
   data/            bundled item bank (250 ARC-Challenge items)
-scripts/           item-bank builder (HF datasets-server), Space deployment
+scripts/           item-bank & RAG-bank builders (HF datasets-server), Space deployment
 space/             the Gradio app published to HF Spaces
 tests/             ground-truth recovery tests for every estimator
 ```
@@ -145,7 +163,7 @@ tests/             ground-truth recovery tests for every estimator
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 36 tests, ~3s, fully offline
+pytest -q          # 47 tests, ~5s, fully offline
 ruff check src tests scripts
 ```
 

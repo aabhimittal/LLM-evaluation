@@ -138,7 +138,55 @@ domain knowledge can partially reconstruct famous items; a contaminated model ca
 paraphrase away from verbatim recall. Elevated risk means **investigate** (e.g. run
 the probes on a held-out private set as a baseline), never "guilty".
 
-## 6. The fingerprint
+## 6. RAG grounding (faithfulness & relevance)
+
+Retrieval-augmented systems fail in ways a plain benchmark score cannot see: the
+model answers fluently but the answer is not *grounded* in the retrieved passages.
+Ragas and TruLens score this with a single LLM-judged faithfulness/relevance number.
+Caliper measures the same properties but keeps its house rules — **uncertainty on
+every number, and localization instead of an aggregate**.
+
+### Faithfulness
+
+For a `(question, contexts)` sample the model answers using only the contexts. We
+then:
+
+1. **decompose** the answer into atomic claims (one factual statement each);
+2. **verify** each claim against the contexts with an NLI-style judge
+   (SUPPORTED / NOT_SUPPORTED), sampled `n_samples` times so the verifier's
+   **self-agreement** is recorded;
+3. report `faithfulness = supported_claims / total_claims`, with a **bootstrap CI**
+   over claims, and — most usefully — the **list of unsupported claims**. A
+   hallucination is thus an *address* (this sample, this sentence), not a lower score.
+
+### Answer relevance
+
+An answer that addresses the question should let you reconstruct the question from
+it. We ask the model to generate questions *from its own answer*, embed them and the
+original question (HF `feature-extraction`, or the simulated hashed embedding), and
+report the mean cosine similarity with a CI over the generated questions.
+
+### Context precision
+
+The fraction of retrieved passages the model judges genuinely useful for the
+question. Low precision means the retriever is padding the context with distractors.
+
+### Ground truth
+
+`SimulatedRAGSubject` injects a known `hallucination_rate`, `answer_relevance` and
+`context_precision`. Supported claims quote the context verbatim, so the token-overlap
+verifier marks exactly the fabricated claims as unsupported; the suite recovers
+`supported_fraction ≈ 1 − hallucination_rate` (see `tests/test_rag.py`).
+
+**Caveat — read this one.** The verifier is itself a model; a weak verifier
+mislabels entailment, which is why **agreement across samples is reported** and why
+you should read the unsupported-claims list, not just the aggregate. The answer- and
+context-relevance numbers inherit the quality of the embedding / relevance judge.
+Faithfulness here is grounding in the *retrieved* context, not truth in the world: a
+model faithfully repeating a wrong passage scores high. For the *standard* Ragas /
+TruLens numbers, `caliper.rag.bridge` wraps those libraries (optional `[rag]` extra).
+
+## 7. The fingerprint
 
 Radar dimensions, all normalized to [0,1], higher = better:
 

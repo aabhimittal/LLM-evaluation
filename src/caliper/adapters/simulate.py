@@ -29,6 +29,22 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
+def _hashed_bow(texts: list[str], dim: int = 256) -> np.ndarray:
+    """Cheap deterministic embedding: hashed bag-of-words, l2-normalized.
+
+    Good enough for cosine similarity of near-duplicate texts, which is all the
+    offline demo and tests need. Shared by every simulated adapter.
+    """
+    out = np.zeros((len(texts), dim))
+    for i, text in enumerate(texts):
+        for tok in re.findall(r"[a-z0-9]+", text.lower()):
+            j = int(hashlib.sha256(tok.encode()).hexdigest()[:8], 16) % dim
+            out[i, j] += 1.0
+    norms = np.linalg.norm(out, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return out / norms
+
+
 def three_pl(theta: float, a: float, b: float, c: float) -> float:
     return c + (1.0 - c) / (1.0 + np.exp(-a * (theta - b)))
 
@@ -89,20 +105,7 @@ class SimulatedSubject(ModelAdapter):
         return self._generic_response(prompt, rng)
 
     def embed(self, texts: list[str]) -> np.ndarray:
-        """Cheap deterministic embedding: hashed bag-of-words, l2-normalized.
-
-        Good enough for cosine similarity of near-duplicate texts, which is
-        all the offline demo needs.
-        """
-        dim = 256
-        out = np.zeros((len(texts), dim))
-        for i, text in enumerate(texts):
-            for tok in re.findall(r"[a-z0-9]+", text.lower()):
-                j = int(hashlib.sha256(tok.encode()).hexdigest()[:8], 16) % dim
-                out[i, j] += 1.0
-        norms = np.linalg.norm(out, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        return out / norms
+        return _hashed_bow(texts)
 
     # -- behaviours --------------------------------------------------------
 
@@ -267,3 +270,131 @@ def _between(text: str, start: str, end: str) -> str:
         return text.split(start, 1)[1].split(end, 1)[0].strip()
     except IndexError:
         return ""
+
+
+class SimulatedRAGSubject(ModelAdapter):
+    """A retrieval-augmented model with a *known* grounding profile.
+
+    The RAG evaluator recovers the injected properties, so every metric can be
+    checked against ground truth (the same design as :class:`SimulatedSubject`
+    for IRT ability):
+
+    - ``hallucination_rate``: fraction of the answer's claims that are
+      fabricated (not entailed by the context). Recovered as
+      ``1 - supported_fraction``.
+    - ``answer_relevance``: how often generated questions echo the answer's
+      on-topic content (raises cosine similarity to the original question).
+    - ``context_precision``: probability a retrieved passage is judged useful.
+
+    The model is internally consistent: supported claims quote the context
+    verbatim, so the built-in NLI verifier (token-overlap) marks exactly the
+    fabricated claims as unsupported.
+    """
+
+    def __init__(
+        self,
+        hallucination_rate: float = 0.2,
+        answer_relevance: float = 0.85,
+        context_precision: float = 0.75,
+        seed: int = 0,
+        n_claims: int = 5,
+        name: str | None = None,
+    ):
+        self.hallucination_rate = hallucination_rate
+        self.answer_relevance = answer_relevance
+        self.context_precision = context_precision
+        self.seed = seed
+        self.n_claims = n_claims
+        self.name = name or f"simulated-rag(halluc={hallucination_rate:.2f})"
+
+    # -- adapter interface ------------------------------------------------
+
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int = 512,
+        seed: int | None = None,
+    ) -> str:
+        prompt = messages[-1]["content"]
+        if "Answer the question using only the provided context" in prompt:
+            return self._answer(prompt)
+        if "Break the following answer into atomic factual claims" in prompt:
+            return self._decompose(prompt)
+        if "Reply SUPPORTED or NOT_SUPPORTED" in prompt:
+            return self._verify(prompt)
+        if "Generate a question that this answer would answer" in prompt:
+            return self._generate_question(prompt, seed or 0)
+        if "Reply RELEVANT or IRRELEVANT" in prompt:
+            return self._rate_context(prompt)
+        return "I can only answer from the provided context."
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        return _hashed_bow(texts)
+
+    # -- parsing helpers ---------------------------------------------------
+
+    @staticmethod
+    def _contexts(prompt: str) -> list[str]:
+        return [m.group(1).strip()
+                for m in re.finditer(r"^\[\d+\]\s(.+)$", prompt, flags=re.MULTILINE)]
+
+    @staticmethod
+    def _after(prompt: str, label: str) -> str:
+        idx = prompt.rfind(label)
+        return prompt[idx + len(label):].strip() if idx >= 0 else ""
+
+    # -- behaviours --------------------------------------------------------
+
+    def _answer(self, prompt: str) -> str:
+        contexts = self._contexts(prompt)
+        question = self._after(prompt, "Question:")
+        k = self.n_claims
+        # Deterministic number of fabricated claims, so faithfulness recovers
+        # 1 - hallucination_rate tightly (up to rounding on k claims).
+        n_bad = int(round(k * self.hallucination_rate))
+        bad = set(_rng(self.seed, "rag-halluc", question).permutation(k)[:n_bad].tolist())
+        sentences = []
+        for j in range(k):
+            if j not in bad and contexts:
+                words = re.findall(r"[A-Za-z0-9']+", contexts[j % len(contexts)])[:10]
+                sentence = " ".join(words) if words else f"detail {j}"
+            else:
+                sentence = (f"Additionally a fabricated detail zeta{j} describes an "
+                            f"unrelated tangent numbered {j}")
+            sentences.append(sentence.rstrip(".").strip())
+        return ". ".join(sentences) + "."
+
+    def _decompose(self, prompt: str) -> str:
+        answer = self._after(prompt, "Answer:")
+        parts = [s.strip().rstrip(".") for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
+        return "\n".join(p for p in parts if p)
+
+    def _verify(self, prompt: str) -> str:
+        contexts = self._contexts(prompt)
+        claim = self._after(prompt, "Claim:")
+        ctx_tokens: set[str] = set()
+        for c in contexts:
+            ctx_tokens |= _tokens(c)
+        claim_tokens = _tokens(claim)
+        if not claim_tokens:
+            return "NOT_SUPPORTED"
+        overlap = len(claim_tokens & ctx_tokens) / len(claim_tokens)
+        return "SUPPORTED" if overlap >= 0.6 else "NOT_SUPPORTED"
+
+    def _generate_question(self, prompt: str, seed: int) -> str:
+        answer = self._after(prompt, "Answer:")
+        rng = _rng(self.seed, "rag-genq", answer, seed)
+        if rng.random() < self.answer_relevance:
+            toks = [t for t in re.findall(r"[A-Za-z0-9']+", answer) if len(t) > 3]
+            rng.shuffle(toks)
+            picked = toks[:6] or ["topic"]
+            return "What about " + " ".join(picked) + "?"
+        fillers = ["please", "clarify", "miscellaneous", "unrelated", "tangential", "aside"]
+        return "What about " + " ".join(fillers) + "?"
+
+    def _rate_context(self, prompt: str) -> str:
+        passage = self._after(prompt, "Passage:")
+        rng = _rng(self.seed, "rag-ctx", passage)
+        return "RELEVANT" if rng.random() < self.context_precision else "IRRELEVANT"

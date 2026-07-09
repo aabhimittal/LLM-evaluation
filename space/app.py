@@ -18,16 +18,18 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 import gradio as gr
 import numpy as np
 
-from caliper.adapters import SimulatedJudge, SimulatedSubject
+from caliper.adapters import SimulatedJudge, SimulatedRAGSubject, SimulatedSubject
 from caliper.irt import run_adaptive
 from caliper.judge import PairwiseJudge
-from caliper.report import render_html, run_fingerprint
+from caliper.rag import RagBank, evaluate_rag
+from caliper.report import render_html, render_rag_html, run_fingerprint
 from caliper.report.html import _line_chart, _radar_svg
 from caliper.robustness import evaluate_robustness
 from caliper.robustness.perturb import PERTURBATIONS
 from caliper.types import ItemBank
 
 BANK = ItemBank.bundled()
+RAG_BANK = RagBank.bundled()
 
 CSS = """
 .svgbox { background: var(--background-fill-primary); border-radius: 8px; padding: 8px; }
@@ -238,6 +240,64 @@ def ui_fingerprint(mode, model_id, token, theta, robustness, skew, contaminated,
     return radar, summary, iframe, [str(json_path), str(html_path)]
 
 
+# ---------------------------------------------------------------- rag
+
+def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, n_samples,
+           progress=gr.Progress()):
+    if mode.startswith("Demo"):
+        adapter = SimulatedRAGSubject(
+            hallucination_rate=halluc, answer_relevance=ans_rel,
+            context_precision=ctx_prec, seed=0,
+        )
+    else:
+        if not model_id.strip():
+            raise gr.Error("Enter a model id for live mode.")
+        from caliper.adapters.hf_inference import HFInferenceAdapter
+
+        adapter = HFInferenceAdapter(model=model_id.strip(), token=token.strip() or None)
+
+    n = int(n_samples)
+    steps = iter(np.linspace(0.05, 0.95, max(n, 1)))
+
+    def report_progress(_msg):
+        try:
+            progress(next(steps), desc=_msg)
+        except StopIteration:
+            pass
+
+    try:
+        report = evaluate_rag(adapter, RAG_BANK, n_samples=n, seed=0,
+                              n_boot=300, progress=report_progress)
+    except Exception as e:  # noqa: BLE001
+        raise gr.Error(f"RAG run failed: {e}") from e
+
+    f_lo, f_hi = report.faithfulness_ci95
+    summary = (
+        f"### Faithfulness: **{report.faithfulness:.2f}** "
+        f"(95% CI {f_lo:.2f} – {f_hi:.2f}, {report.n_claims} claims)\n\n"
+        f"- answer relevance **{report.answer_relevance:.2f}** · "
+        f"context precision **{report.context_precision:.2f}**\n"
+        f"- **{report.n_unsupported_claims}** hallucinated claims localized · "
+        f"verifier self-agreement {report.mean_verifier_agreement:.2f}\n\n"
+        "*Unlike a single Ragas/TruLens score, every number carries its "
+        "uncertainty and each unsupported claim is pinned to its sample.*"
+    )
+    if report.unsupported_examples:
+        rows = ["", "**Localized hallucinations** (claims not entailed by the context):",
+                "", "| sample | unsupported claim |", "|---|---|"]
+        for e in report.unsupported_examples[:8]:
+            rows.append(f"| {e['sample_id']} | {str(e['claim'])[:90]} |")
+        summary += "\n" + "\n".join(rows)
+
+    html_report = render_rag_html(report, model_name=adapter.name,
+                                  bank_name=RAG_BANK.name)
+    iframe = (
+        '<iframe style="width:100%;height:720px;border:none;border-radius:8px" '
+        f'srcdoc="{html_report.replace("&", "&amp;").replace(chr(34), "&quot;")}"></iframe>'
+    )
+    return summary, iframe
+
+
 # ---------------------------------------------------------------- layout
 
 with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
@@ -369,6 +429,33 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
             ui_fingerprint, inputs=subject_inputs,
             outputs=[fingerprint_radar, fingerprint_summary, fingerprint_iframe,
                      fingerprint_files],
+        )
+
+    with gr.Tab("🔗 RAG grounding"):
+        gr.Markdown(
+            "**Faithfulness & relevance the measurement-science way.** Each answer is "
+            "split into atomic claims; every claim is verified against the retrieved "
+            "context by a sampled NLI judge. You get faithfulness, answer relevance and "
+            "context precision — each with a **95% confidence interval** — plus the exact "
+            "list of **unsupported (hallucinated) claims**. In demo mode you inject a "
+            "known hallucination rate and watch it get recovered."
+        )
+        with gr.Row():
+            rag_halluc = gr.Slider(0.0, 1.0, value=0.3, step=0.05,
+                                   label="Demo: true hallucination rate")
+            rag_ans_rel = gr.Slider(0.0, 1.0, value=0.85, step=0.05,
+                                    label="Demo: answer relevance")
+            rag_ctx_prec = gr.Slider(0.0, 1.0, value=0.75, step=0.05,
+                                     label="Demo: context precision")
+        rag_n = gr.Slider(4, len(RAG_BANK), value=min(10, len(RAG_BANK)), step=1,
+                          label="RAG samples to score")
+        rag_button = gr.Button("Run RAG grounding suite", variant="primary")
+        rag_summary = gr.Markdown()
+        rag_iframe = gr.HTML()
+        rag_button.click(
+            ui_rag,
+            inputs=[mode, model_id, token, rag_halluc, rag_ans_rel, rag_ctx_prec, rag_n],
+            outputs=[rag_summary, rag_iframe],
         )
 
     gr.Markdown(

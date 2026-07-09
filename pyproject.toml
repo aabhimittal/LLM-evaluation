@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-caliper"
 version = "0.1.0"
-description = "Measurement-science evaluation for LLMs: adaptive IRT testing, uncertainty-aware judging, robustness, calibration, and contamination probes."
+description = "Measurement-science evaluation for LLMs: adaptive IRT testing, uncertainty-aware judging, robustness, calibration, contamination probes, and RAG grounding (faithfulness & relevance with confidence intervals)."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ authors = [{ name = "Abhi Mittal" }]
 keywords = [
   "llm", "evaluation", "item-response-theory", "adaptive-testing",
   "llm-as-judge", "robustness", "calibration", "contamination",
+  "rag", "faithfulness", "retrieval-augmented-generation", "hallucination",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -30,6 +31,7 @@ dependencies = [
 [project.optional-dependencies]
 hf = ["huggingface_hub>=0.24"]
 space = ["gradio>=4.36", "huggingface_hub>=0.24"]
+rag = ["ragas>=0.1", "trulens-eval>=0.20", "datasets>=2.14"]
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.scripts]

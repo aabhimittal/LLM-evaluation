@@ -134,6 +134,34 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 2
 
 
+def _build_rag_adapter(args: argparse.Namespace):
+    if args.adapter == "simulated":
+        from caliper.adapters import SimulatedRAGSubject
+
+        return SimulatedRAGSubject(
+            hallucination_rate=args.hallucination_rate,
+            answer_relevance=args.answer_relevance,
+            context_precision=args.context_precision,
+            seed=args.seed,
+        )
+    return _build_adapter(args)
+
+
+def cmd_rag(args: argparse.Namespace) -> int:
+    from caliper.rag import RagBank, evaluate_rag
+
+    bank = RagBank.load(args.rag_bank) if args.rag_bank else RagBank.bundled()
+    adapter = _build_rag_adapter(args)
+    report = evaluate_rag(
+        adapter, bank, n_samples=args.n_samples, seed=args.seed, progress=_say
+    )
+    payload = report.to_dict()
+    payload.pop("per_sample", None)
+    payload["unsupported_examples"] = payload["unsupported_examples"][:8]
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     from caliper.judge import Match, PairwiseJudge, bootstrap_ratings
 
@@ -234,6 +262,20 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("--judge-samples", type=int, default=3)
     compare_parser.add_argument("--n-boot", type=int, default=200)
     compare_parser.set_defaults(func=cmd_compare)
+
+    rag_parser = sub.add_parser(
+        "rag", help="RAG grounding: faithfulness & relevance, with confidence intervals"
+    )
+    add_adapter_args(rag_parser)
+    rag_parser.add_argument("--rag-bank", default=None, help="path to a RAG bank JSON")
+    rag_parser.add_argument("--n-samples", type=int, default=20)
+    rag_parser.add_argument("--hallucination-rate", type=float, default=0.2,
+                            help="simulated: fraction of fabricated claims")
+    rag_parser.add_argument("--answer-relevance", type=float, default=0.85,
+                            help="simulated: how on-topic generated questions are")
+    rag_parser.add_argument("--context-precision", type=float, default=0.75,
+                            help="simulated: fraction of passages judged relevant")
+    rag_parser.set_defaults(func=cmd_rag)
 
     calibrate_parser = sub.add_parser(
         "calibrate", help="fit IRT item parameters from a correctness matrix CSV"
