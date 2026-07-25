@@ -18,7 +18,9 @@ is audited for bias, and memorization is probed rather than assumed away.
 |---|---|
 | Run **all** benchmark items | **Adaptive testing (IRT)**: picks the ~35 most informative items for *this* model, with a live-shrinking confidence interval |
 | Report accuracy as a point score | Reports latent **ability θ with a 95% CI**, plus how it converged |
+| Fixed sample size; peeking invalidates the p-value | **Anytime-valid duels** (e-values): peek after every item, stop the moment a winner is clear — type-I error still ≤ α |
 | LLM-as-judge, order fixed | Judge runs **both presentation orders × N samples**; position bias cancels and is *reported*; verbosity bias is measured |
+| "Our judge agrees with humans 80% of the time" | **Judge report card**: Cohen's κ, excess bias over humans, confidence-AUC, letter grade |
 | Elo without error bars | **Bradley–Terry with bootstrap CIs** (Chatbot-Arena style, in 100 lines you can read) |
 | Assume the benchmark is unseen | **Contamination probes**: continuation and option-recall tests for memorization |
 | Score the phrasing that ships | **Metamorphic robustness**: paraphrase, typos, homoglyphs, distractors, option shuffling — same meaning, same answer? |
@@ -26,6 +28,7 @@ is audited for bias, and memorization is probed rather than assumed away.
 | RAG faithfulness/relevance as one point score (Ragas, TruLens) | **RAG grounding with uncertainty**: claim-level faithfulness with a bootstrap CI, and each unsupported claim *localized* to its sentence — a hallucination is an address, not a lower number |
 | Trust the LLM judge that grades faithfulness | **The grader gets graded**: the verifier is measured against known-truth controls, and faithfulness is *bias-corrected* for its sensitivity/specificity (Rogan–Gladen); a chance-level verifier is refused, not averaged |
 | Assume a high faithfulness score means retrieval worked | **Attribution probe**: re-answers with the context removed, swapped and polluted — separates answers *earned by retrieval* from parametric memory |
+| Never question the benchmark | **Benchmark diagnostics**: saturation ceiling, minimum detectable difference, and **DIF** — which items are unfair between model families |
 
 The output is a **fingerprint** — five dimensions with uncertainty — not a single number:
 
@@ -77,6 +80,14 @@ caliper rag --adapter simulated --context-reliance 0.0 --hallucination-rate 0.0
 # A real model on your own RAG bank (feature-extraction embeddings for relevance):
 caliper rag --adapter hf --model Qwen/Qwen2.5-7B-Instruct --rag-bank my_rag.json \
     --out reports/          # writes JSON + a self-contained HTML report
+
+# Head-to-head that stops as soon as the winner is statistically decided:
+caliper duel --adapter simulated --theta 0.6 --theta-b -1.2
+#   -> decided at item 42 of a 200-item budget; peeking cost nothing
+
+# Ask what the benchmark itself can measure, and audit it for biased items:
+caliper diagnose --test-length 40
+caliper dif --matrix matrix.csv --groups groups.csv
 ```
 
 `caliper run --suite fingerprint` writes a JSON report and a self-contained HTML
@@ -92,15 +103,18 @@ flowchart LR
         SIM[Simulated / Replay\nknown ground truth]
     end
     adapters --> IRT[Adaptive IRT\n3PL ability + CI]
+    adapters --> SEQ[Sequential duel\ne-values, stop early]
     adapters --> ROB[Metamorphic\nrobustness]
     adapters --> CAL[Calibration\nECE / risk-coverage]
     adapters --> CON[Contamination\nprobes]
-    adapters --> JUD[Debiased judge\nBT + bootstrap]
+    adapters --> JUD[Debiased judge\nBT + report card]
     IRT --> FP[Fingerprint\nJSON + HTML report]
     ROB --> FP
     CAL --> FP
     CON --> FP
     JUD --> FP
+    BANK[(Item bank)] --> DIAG[Benchmark diagnostics\nsaturation + power]
+    BANK --> DIF[DIF audit\nitem fairness]
 ```
 
 - **Adaptive IRT** (`caliper.irt`) — a 3PL item-response model
@@ -109,9 +123,23 @@ flowchart LR
   θ estimate (randomesque top-k for exposure control), then re-estimates θ by MAP with a
   standard error from the posterior curvature. Sessions stop at a target SE — typically
   **30–50 items** for a CI a full benchmark run would give you.
+- **Sequential duels** (`caliper.sequential`) — a betting **e-process**: wealth starts
+  at 1 and is staked on each paired outcome, so under the null it is a nonnegative
+  martingale and Ville's inequality caps the false-positive rate at α *for every
+  stopping rule at once*. Verified empirically in `tests/test_sequential.py`:
+  **2% false positives under peek-every-item, where a naive repeated z-test hits 42%**.
+  Ships with a Robbins normal-mixture confidence sequence for the win rate.
 - **Judge** (`caliper.judge`) — verdicts sampled in both orders; the debiased win
   probability feeds a Bradley–Terry fit whose CIs come from a bootstrap over matches.
-  The judge itself gets an audit: position-flip rate and verbosity correlation.
+  The judge itself gets an audit (position-flip rate, verbosity correlation) and, when
+  you have human labels, a **report card**: Cohen's κ, bias *in excess of* the humans',
+  whether its confidence predicts its correctness, and a letter grade.
+- **Benchmark diagnostics** (`caliper.diagnostics`, `caliper.dif`) — the test
+  information function says where a bank can still measure and where it has
+  **saturated**; power analysis gives the minimum detectable ability gap for an item
+  budget; **Differential Item Functioning** (Mantel–Haenszel with rest-score matching
+  and two-stage purification, ETS delta classification) flags items that behave
+  differently between two model families *at matched ability*.
 - **Robustness / Calibration / Contamination** (`caliper.robustness`, `.calibration`,
   `.contamination`) — see [METHODOLOGY.md](METHODOLOGY.md) for the math and the honest
   caveats of each probe.
@@ -134,7 +162,9 @@ flowchart LR
   identically without its context did not earn the score.
 - **Everything is testable against ground truth**: `SimulatedSubject` has a known θ,
   calibration skew, robustness and contamination status; the test suite verifies each
-  estimator recovers what was injected (`tests/`, 64 tests, no network).
+  estimator recovers what was injected (`tests/`, 98 tests, no network). The
+  anytime-validity guarantee is *measured*, not asserted: 400 simulated null
+  comparisons with adversarial peeking must keep the false-positive rate under α.
 
 ### A note on the bundled item bank
 
@@ -152,17 +182,24 @@ This honesty matters: adaptive selection is only as good as the item parameters.
 
 ## The Space
 
-The [Hugging Face Space](https://huggingface.co/spaces/abhimittal/caliper) has five tabs:
+The [Hugging Face Space](https://huggingface.co/spaces/abhimittal/caliper) has eight tabs:
 
 1. **📈 Adaptive ability** — watch θ converge item by item, CI shrinking live
 2. **⚖️ Judge lab** — inject position/verbosity bias into a demo judge and watch the
-   audit catch it; or run a real judge with your token
+   audit catch it, then **grade the judge** against human labels (κ, excess bias,
+   confidence AUC, letter grade); or run a real judge with your token
 3. **🌀 Robustness** — preview perturbations, run the invariance suite
 4. **🫆 Full fingerprint** — the whole battery + downloadable JSON/HTML report
 5. **🔗 RAG grounding** — inject a hallucination rate and watch faithfulness recover it,
    with every unsupported claim localized; then bias the *verifier* and watch the raw
    score go wrong while the corrected one holds, or set context reliance to 0 and watch
    `earned_by_retrieval` collapse while faithfulness stays high
+6. **⚔️ Sequential duel** — two models, streaming evidence, stops the moment the winner
+   is decided (default demo settles at item ~42 of a 200-item budget)
+7. **🩺 Benchmark diagnostics** — the SE-vs-ability curve, saturation ceiling, minimum
+   detectable difference, adaptive-vs-random efficiency
+8. **🔎 Item bias (DIF)** — rig some items in favour of one model family, then watch the
+   auditor separate real bias from an honest ability gap
 
 Demo mode runs entirely on simulated subjects (no token, no cost). Live mode uses your
 HF token against Inference Providers (`chat-completion`), session-only.
@@ -173,7 +210,10 @@ HF token against Inference Providers (`chat-completion`), session-only.
 src/caliper/
   adapters/        HF Inference, OpenAI-compatible, Replay (record/replay), Simulated
   irt/             3PL model, MAP ability + SE, Fisher-information adaptive sessions
-  judge/           debiased pairwise judging, Bradley–Terry + bootstrap
+  sequential/      e-process duels + Robbins confidence sequences (anytime-valid)
+  judge/           debiased pairwise judging, Bradley–Terry + bootstrap, report card
+  dif/             Mantel–Haenszel differential item functioning, ETS delta
+  diagnostics/     test information, saturation ceiling, power, adaptive efficiency
   robustness/      metamorphic perturbations + invariance suite
   calibration/     ECE, Brier, risk–coverage
   contamination/   continuation & option-recall probes, n-gram screening
@@ -191,7 +231,7 @@ tests/             ground-truth recovery tests for every estimator
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 64 tests, ~4s, fully offline
+pytest -q          # 98 tests, ~13s, fully offline
 ruff check src tests scripts
 ```
 

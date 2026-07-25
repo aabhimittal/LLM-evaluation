@@ -19,6 +19,20 @@ Judge two models pairwise and rank with bootstrap CIs::
 Recalibrate the item bank from a real correctness matrix::
 
     caliper calibrate --matrix matrix.csv --bank src/caliper/data/item_bank.json
+
+Run two models head-to-head and stop the moment the winner is decided
+(anytime-valid, so peeking after every item is safe)::
+
+    caliper duel --adapter hf --model-a Qwen/Qwen2.5-7B-Instruct \\
+        --model-b microsoft/Phi-3.5-mini-instruct
+
+Audit the benchmark itself — which items are unfair between model families::
+
+    caliper dif --matrix matrix.csv --groups groups.csv
+
+Ask what the benchmark can and cannot measure::
+
+    caliper diagnose --test-length 40
 """
 
 from __future__ import annotations
@@ -231,6 +245,113 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_duel(args: argparse.Namespace) -> int:
+    from caliper.sequential import run_item_duel
+
+    bank = ItemBank.load(args.bank) if args.bank else ItemBank.bundled()
+    adapter_a = _build_adapter(args, model=args.model_a)
+    adapter_b = _build_adapter(args, model=args.model_b)
+    if args.adapter == "simulated":
+        # Give the two simulated contestants distinct abilities to duel with.
+        from caliper.adapters import SimulatedSubject
+
+        adapter_a = SimulatedSubject(theta=args.theta, bank=bank, seed=args.seed,
+                                     name=args.model_a or "A")
+        adapter_b = SimulatedSubject(theta=args.theta_b, bank=bank, seed=args.seed + 1,
+                                     name=args.model_b or "B")
+
+    last = None
+    for state in run_item_duel(
+        adapter_a, adapter_b, bank,
+        alpha=args.alpha, max_items=args.max_items, seed=args.seed,
+    ):
+        lo, hi = state.ci95
+        _say(
+            f"item {state.step:>3}  outcome={state.outcome:.1f}  "
+            f"win_rate={state.win_rate:.3f} CS=[{lo:.2f},{hi:.2f}]  "
+            f"E_A={state.e_value_a:8.2f} E_B={state.e_value_b:8.2f}"
+        )
+        last = state
+    if last is None:
+        _say("no items administered")
+        return 1
+    duel_summary = {
+        "models": {"A": adapter_a.name, "B": adapter_b.name},
+        "n_observations": last.step,
+        "win_rate_a": last.win_rate,
+        "confidence_sequence_95": list(last.ci95),
+        "e_value_a": last.e_value_a,
+        "e_value_b": last.e_value_b,
+        "decided": last.decided,
+        "winner": (
+            adapter_a.name if last.winner == "A"
+            else adapter_b.name if last.winner == "B" else None
+        ),
+        "alpha": args.alpha,
+        "note": (
+            "Stopped as soon as the evidence crossed the threshold. The type-I "
+            "error guarantee holds despite peeking after every item."
+            if last.decided else
+            "Inconclusive within the item budget — the models are close enough "
+            "that this bank cannot separate them."
+        ),
+    }
+    print(json.dumps(duel_summary, indent=2))
+    return 0
+
+
+def cmd_dif(args: argparse.Namespace) -> int:
+    from caliper.dif import detect_dif
+
+    bank = ItemBank.load(args.bank) if args.bank else ItemBank.bundled()
+    responses = np.genfromtxt(args.matrix, delimiter=",", skip_header=args.skip_header)
+    if responses.ndim == 1:
+        responses = responses[None, :]
+    groups = np.genfromtxt(args.groups, delimiter=",").astype(int).ravel()
+    report = detect_dif(
+        responses, groups, bank,
+        n_strata=args.n_strata, alpha=args.alpha,
+        reference_name=args.reference_name, focal_name=args.focal_name,
+    )
+    _say(
+        f"{len(report.flagged)}/{report.n_items} items flagged "
+        f"({report.flag_rate:.1%}) across {report.n_strata} ability strata"
+    )
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0
+
+
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    from caliper.diagnostics import (
+        adaptive_efficiency,
+        bank_health,
+        items_needed,
+        minimum_detectable_difference,
+    )
+
+    bank = ItemBank.load(args.bank) if args.bank else ItemBank.bundled()
+    health = bank_health(bank, se_target=args.se_target, test_length=args.test_length)
+    power = minimum_detectable_difference(
+        bank, n_items=args.test_length or 40, theta=args.theta
+    )
+    efficiency = adaptive_efficiency(
+        bank, theta=args.theta, n_items=args.test_length or 30
+    )
+    payload = {
+        "bank": bank.name,
+        "calibration": bank.calibration,
+        "health": health.to_dict(),
+        "power": power.to_dict(),
+        "adaptive_efficiency": efficiency,
+        "items_needed": {
+            str(gap): items_needed(gap, bank, theta=args.theta)
+            for gap in (1.5, 1.0, 0.5)
+        },
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def cmd_calibrate(args: argparse.Namespace) -> int:
     from caliper.irt import fit_items
 
@@ -317,6 +438,41 @@ def main(argv: list[str] | None = None) -> int:
     rag_parser.add_argument("--out", default=None,
                             help="directory for JSON + HTML report")
     rag_parser.set_defaults(func=cmd_rag)
+    duel_parser = sub.add_parser(
+        "duel", help="anytime-valid head-to-head: stop as soon as a winner is clear"
+    )
+    add_adapter_args(duel_parser)
+    duel_parser.add_argument("--model-a", default="")
+    duel_parser.add_argument("--model-b", default="")
+    duel_parser.add_argument("--theta-b", type=float, default=-0.3,
+                             help="ability of simulated model B (demo mode)")
+    duel_parser.add_argument("--alpha", type=float, default=0.05)
+    duel_parser.add_argument("--max-items", type=int, default=120)
+    duel_parser.set_defaults(func=cmd_duel)
+
+    dif_parser = sub.add_parser(
+        "dif", help="audit the benchmark for items biased between model families"
+    )
+    dif_parser.add_argument("--matrix", required=True,
+                            help="CSV, one row per model, one 0/1 column per item")
+    dif_parser.add_argument("--groups", required=True,
+                            help="CSV of 0 (reference) / 1 (focal), one per model row")
+    dif_parser.add_argument("--bank", default=None)
+    dif_parser.add_argument("--n-strata", type=int, default=5)
+    dif_parser.add_argument("--alpha", type=float, default=0.05)
+    dif_parser.add_argument("--reference-name", default="reference")
+    dif_parser.add_argument("--focal-name", default="focal")
+    dif_parser.add_argument("--skip-header", type=int, default=0)
+    dif_parser.set_defaults(func=cmd_dif)
+
+    diagnose_parser = sub.add_parser(
+        "diagnose", help="what can this benchmark measure? saturation and power"
+    )
+    diagnose_parser.add_argument("--bank", default=None)
+    diagnose_parser.add_argument("--se-target", type=float, default=0.3)
+    diagnose_parser.add_argument("--test-length", type=int, default=None)
+    diagnose_parser.add_argument("--theta", type=float, default=0.0)
+    diagnose_parser.set_defaults(func=cmd_diagnose)
 
     calibrate_parser = sub.add_parser(
         "calibrate", help="fit IRT item parameters from a correctness matrix CSV"
