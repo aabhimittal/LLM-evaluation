@@ -38,7 +38,7 @@ class Item:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Item":
+    def from_dict(cls, d: dict) -> Item:
         return cls(**{k: d[k] for k in (
             "id", "question", "choices", "answer_index", "a", "b", "source", "tags"
         ) if k in d})
@@ -73,7 +73,7 @@ class ItemBank:
         Path(path).write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: str | Path) -> "ItemBank":
+    def load(cls, path: str | Path) -> ItemBank:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             items=[Item.from_dict(d) for d in payload["items"]],
@@ -82,7 +82,7 @@ class ItemBank:
         )
 
     @classmethod
-    def bundled(cls) -> "ItemBank":
+    def bundled(cls) -> ItemBank:
         """Load the item bank that ships with the package."""
         path = Path(__file__).parent / "data" / "item_bank.json"
         return cls.load(path)

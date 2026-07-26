@@ -40,7 +40,7 @@ class RagSample:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RagSample":
+    def from_dict(cls, d: dict) -> RagSample:
         return cls(**{k: d[k] for k in (
             "id", "question", "contexts", "reference_answer",
             "supported_facts", "tags",
@@ -76,7 +76,7 @@ class RagBank:
         Path(path).write_text(json.dumps(payload, indent=1), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: str | Path) -> "RagBank":
+    def load(cls, path: str | Path) -> RagBank:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             samples=[RagSample.from_dict(d) for d in payload["samples"]],
@@ -85,7 +85,7 @@ class RagBank:
         )
 
     @classmethod
-    def bundled(cls) -> "RagBank":
+    def bundled(cls) -> RagBank:
         """Load the small demo RAG bank that ships with the package."""
         path = Path(__file__).parent / "data" / "rag_bank.json"
         return cls.load(path)

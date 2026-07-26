@@ -25,8 +25,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from caliper.irt.model import fit_items, p_correct  # noqa: E402
-from caliper.types import Item, ItemBank  # noqa: E402
+from caliper.irt.model import fit_items, p_correct
+from caliper.types import Item, ItemBank
 
 API = "https://datasets-server.huggingface.co/rows"
 DATASET = "allenai/ai2_arc"

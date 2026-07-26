@@ -1,8 +1,8 @@
 import numpy as np
 
+from caliper.adapters import SimulatedSubject
 from caliper.irt import estimate_ability, fit_items, item_information, p_correct
 from caliper.irt.adaptive import AdaptiveSession, run_adaptive
-from caliper.adapters import SimulatedSubject
 
 
 def test_p_correct_monotonic_in_theta():

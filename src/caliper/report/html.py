@@ -9,8 +9,8 @@ from __future__ import annotations
 import html
 import math
 
-from caliper.report.fingerprint import Fingerprint
 from caliper.rag.suite import RagReport
+from caliper.report.fingerprint import Fingerprint
 
 _CSS = """
 :root {
@@ -154,8 +154,10 @@ def _line_chart(
     def sy(y: float) -> float:
         return height - pad_b - (y - y0) / (y1 - y0) * (height - pad_t - pad_b)
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="{html.escape(aria)}">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="{html.escape(aria)}">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         gy = y0 + frac * (y1 - y0)
         parts.append(
@@ -214,8 +216,10 @@ def _reliability_svg(bins: list[dict], width: int = 420, height: int = 220) -> s
     def sy(y: float) -> float:
         return height - pad_b - y * (height - pad_t - pad_b)
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="Reliability diagram">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="Reliability diagram">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         parts.append(
             f'<line x1="{pad_l}" y1="{sy(frac):.1f}" x2="{width - pad_r}" y2="{sy(frac):.1f}" '
@@ -263,8 +267,10 @@ def _bar_chart(values: list[float], *, width: int = 420, height: int = 200,
     def sy(y: float) -> float:
         return pad_t + (1.0 - y) * plot_h
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="{html.escape(aria)}">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="{html.escape(aria)}">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         parts.append(
             f'<line x1="{pad_l}" y1="{sy(frac):.1f}" x2="{width - pad_r}" y2="{sy(frac):.1f}" '

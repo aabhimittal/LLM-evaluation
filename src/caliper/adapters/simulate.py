@@ -409,12 +409,12 @@ class SimulatedRAGSubject(ModelAdapter):
         k = self.n_claims
         # Deterministic number of fabricated claims, so faithfulness recovers
         # 1 - hallucination_rate tightly (up to rounding on k claims).
-        n_bad = int(round(k * self.hallucination_rate))
+        n_bad = round(k * self.hallucination_rate)
         bad = set(_rng(self.seed, "rag-halluc", question).permutation(k)[:n_bad].tolist())
         # Of the genuine claims, only a `context_reliance` share is actually
         # read off the retrieved passages; the rest is parametric recall.
         genuine = [j for j in range(k) if j not in bad]
-        n_ctx = int(round(len(genuine) * self.context_reliance))
+        n_ctx = round(len(genuine) * self.context_reliance)
         from_context = set(genuine[:n_ctx])
 
         sentences = []

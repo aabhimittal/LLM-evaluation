@@ -88,7 +88,7 @@ def estimate_ability(
     ) / h**2
     se = float(1.0 / np.sqrt(max(d2, _EPS)))
     return AbilityEstimate(
-        theta=theta, se=se, n_items=int(len(y)), log_posterior=float(-res.fun)
+        theta=theta, se=se, n_items=len(y), log_posterior=float(-res.fun)
     )
 
 

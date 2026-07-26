@@ -23,10 +23,14 @@ def _tiny_bank() -> RagBank:
                 f"laboratory conditions?"
             ),
             contexts=[
-                f"The reaction mechanism {i} operates through steady predictable "
-                f"stages under normal laboratory conditions according to the record.",
-                f"A second passage confirms the reaction mechanism {i} was documented "
-                f"carefully under standard normal conditions by independent researchers.",
+                (
+                    f"The reaction mechanism {i} operates through steady predictable "
+                    f"stages under normal laboratory conditions according to the record."
+                ),
+                (
+                    f"A second passage confirms the reaction mechanism {i} was documented "
+                    f"carefully under standard normal conditions by independent researchers."
+                ),
             ],
             reference_answer=f"Reaction mechanism {i} operates in predictable stages.",
         )
