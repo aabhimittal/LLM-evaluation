@@ -1,7 +1,6 @@
 from caliper.adapters import SimulatedJudge
 from caliper.judge import PairwiseJudge
 
-
 PROMPTS = [
     f"Explain how {topic} works in the context of energy transfer"
     for topic in ("photosynthesis", "combustion", "wind turbines", "solar panels",

@@ -134,7 +134,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 2
 
 
-def _build_rag_adapter(args: argparse.Namespace):
+def _build_rag_adapter(args: argparse.Namespace, bank=None):
     if args.adapter == "simulated":
         from caliper.adapters import SimulatedRAGSubject
 
@@ -142,6 +142,10 @@ def _build_rag_adapter(args: argparse.Namespace):
             hallucination_rate=args.hallucination_rate,
             answer_relevance=args.answer_relevance,
             context_precision=args.context_precision,
+            context_reliance=args.context_reliance,
+            verifier_sensitivity=args.verifier_sensitivity,
+            verifier_specificity=args.verifier_specificity,
+            bank=bank,
             seed=args.seed,
         )
     return _build_adapter(args)
@@ -151,14 +155,37 @@ def cmd_rag(args: argparse.Namespace) -> int:
     from caliper.rag import RagBank, evaluate_rag
 
     bank = RagBank.load(args.rag_bank) if args.rag_bank else RagBank.bundled()
-    adapter = _build_rag_adapter(args)
+    adapter = _build_rag_adapter(args, bank)
     report = evaluate_rag(
-        adapter, bank, n_samples=args.n_samples, seed=args.seed, progress=_say
+        adapter, bank, n_samples=args.n_samples, seed=args.seed,
+        with_audit=args.audit_verifier, with_attribution=args.probe_attribution,
+        progress=_say,
     )
     payload = report.to_dict()
     payload.pop("per_sample", None)
     payload["unsupported_examples"] = payload["unsupported_examples"][:8]
+    if payload.get("attribution"):
+        payload["attribution"].pop("per_sample", None)
+
+    if args.out:
+        from caliper.report import render_rag_html
+
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = adapter.name.replace("/", "_").replace(" ", "_")
+        json_path = out_dir / f"{stem}.rag.json"
+        html_path = out_dir / f"{stem}.rag.html"
+        json_path.write_text(report.to_json(), encoding="utf-8")
+        html_path.write_text(
+            render_rag_html(report, model_name=adapter.name, bank_name=bank.name),
+            encoding="utf-8",
+        )
+        _say(f"wrote {json_path} and {html_path}")
+
     print(json.dumps(payload, indent=2))
+    if report.verifier is not None and not report.verifier.usable:
+        _say("WARNING: the verifier carries no usable signal (sensitivity + "
+             "specificity <= 1) — faithfulness cannot be bias-corrected.")
     return 0
 
 
@@ -275,6 +302,20 @@ def main(argv: list[str] | None = None) -> int:
                             help="simulated: how on-topic generated questions are")
     rag_parser.add_argument("--context-precision", type=float, default=0.75,
                             help="simulated: fraction of passages judged relevant")
+    rag_parser.add_argument("--context-reliance", type=float, default=1.0,
+                            help="simulated: share of claims actually read from context")
+    rag_parser.add_argument("--verifier-sensitivity", type=float, default=1.0,
+                            help="simulated: P(verifier says SUPPORTED | truly supported)")
+    rag_parser.add_argument("--verifier-specificity", type=float, default=1.0,
+                            help="simulated: P(verifier says NOT_SUPPORTED | unsupported)")
+    rag_parser.add_argument("--audit-verifier", action=argparse.BooleanOptionalAction,
+                            default=True,
+                            help="audit the verifier and bias-correct faithfulness")
+    rag_parser.add_argument("--probe-attribution", action=argparse.BooleanOptionalAction,
+                            default=True,
+                            help="test whether answers are earned by retrieval")
+    rag_parser.add_argument("--out", default=None,
+                            help="directory for JSON + HTML report")
     rag_parser.set_defaults(func=cmd_rag)
 
     calibrate_parser = sub.add_parser(

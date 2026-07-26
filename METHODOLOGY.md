@@ -186,7 +186,90 @@ Faithfulness here is grounding in the *retrieved* context, not truth in the worl
 model faithfully repeating a wrong passage scores high. For the *standard* Ragas /
 TruLens numbers, `caliper.rag.bridge` wraps those libraries (optional `[rag]` extra).
 
-## 7. The fingerprint
+## 7. Auditing the verifier — and correcting for it
+
+Faithfulness is measured *by a model*. That verifier is an instrument with its own
+error rates, and a raw faithfulness score inherits them silently. The bias is
+**systematic**: it does not shrink as you add samples.
+
+### Measuring the verifier
+
+Controls are built from the bank itself, so no extra labelled data is required:
+
+- **positive controls** — sentences taken from a sample's *own* passages. They are
+  entailed by construction, so a NOT_SUPPORTED verdict is a miss. The rate of correct
+  verdicts estimates **sensitivity** (*se*).
+- **negative controls** — sentences from a *different* sample's passages: true
+  statements about the world that these passages do not entail. This is exactly the
+  distinction faithfulness rests on. The rate of correct rejections estimates
+  **specificity** (*sp*).
+
+Both come with bootstrap CIs. Two pathologies are reported alongside: the
+**order-flip rate** (does the verdict change when the passages are reordered?) and
+the **unparseable rate**.
+
+### Correcting the score
+
+For a test with known error rates, the observed positive rate relates to the true
+prevalence *p* by `p_obs = p·se + (1−p)·(1−sp)`. Inverting gives the Rogan–Gladen
+(1978) estimator:
+
+```
+p_corrected = (p_obs + sp − 1) / (se + sp − 1)
+```
+
+Caliper reports this as `faithfulness_corrected`, with an interval obtained by
+propagating the endpoints of the *se*/*sp* intervals — so the corrected interval
+widens as the verifier becomes less trustworthy, which is the honest behaviour.
+
+**When the correction is refused.** If `se + sp ≤ 1` the verifier is no better than
+chance and the correction is undefined; Caliper reports `usable = False` and returns
+no corrected number rather than manufacturing precision. This matters: a verifier
+that rubber-stamps everything has *sp → 0* and yields a faithfulness score near 1.0
+for any model at all.
+
+**Validation.** `tests/test_rag_audit.py` injects known *se*/*sp* into the simulated
+fact-checker, confirms the audit recovers them, and asserts that — averaged over
+seeds — the corrected estimate lands closer to the true faithfulness than the raw
+one. With a rubber-stamping verifier (se 0.95, sp 0.55) the correction roughly halves
+the error.
+
+**Caveat.** The correction assumes the controls are representative of the claims
+actually being graded. Real answer claims are paraphrases, not verbatim sentences, so
+measured sensitivity is an optimistic bound; treat the corrected value as *"what the
+score would be with a perfect verifier"*, and read the raw and corrected numbers
+together.
+
+## 8. Was the answer earned by retrieval?
+
+High faithfulness does not prove the retrieved passages did any work. A model can
+recite an answer from parametric memory that happens to agree with the context and
+score perfectly — you could switch the retriever off and the benchmark would not
+notice. In Caliper's own demo this shows up starkly: a model with
+`context_reliance = 0` scores **faithfulness 0.90** — which any conventional RAG
+evaluator would call excellent — while **`earned_by_retrieval` is 0.00**. The claims
+really are entailed by the passages; the passages just had nothing to do with
+producing them.
+
+This probe asks the counterfactual directly, re-answering each question under
+altered context:
+
+| Condition | Metric | Reading |
+|---|---|---|
+| context removed (closed book) | `parametric_leakage` = sim(full, closed) | high ⇒ the model already "knew" it; retrieval is decorative |
+| context swapped for another question's | `context_sensitivity` = 1 − sim(full, foreign) | low ⇒ the model ignores what it retrieves |
+| an irrelevant passage added | `distractor_stability` = sim(full, polluted) | low ⇒ one bad retrieval hit derails the answer |
+
+Similarity is cosine over the adapter's embeddings. The headline
+`earned_by_retrieval` is `0.5·context_sensitivity + 0.5·(1 − parametric_leakage)`.
+
+This is the retrieval analogue of the contamination probes in §5: same spirit (ask
+what the score would be if the thing under test were removed), and the same caveat —
+these are **probes, not proof**. A question whose answer is genuinely common
+knowledge will show high leakage without anything being wrong; compare models on the
+same bank rather than reading one number absolutely.
+
+## 9. The fingerprint
 
 Radar dimensions, all normalized to [0,1], higher = better:
 

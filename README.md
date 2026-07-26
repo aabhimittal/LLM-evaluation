@@ -24,6 +24,8 @@ is audited for bias, and memorization is probed rather than assumed away.
 | Score the phrasing that ships | **Metamorphic robustness**: paraphrase, typos, homoglyphs, distractors, option shuffling — same meaning, same answer? |
 | Ignore confidence | **Calibration**: ECE, Brier, risk–coverage — does the model know what it doesn't know? |
 | RAG faithfulness/relevance as one point score (Ragas, TruLens) | **RAG grounding with uncertainty**: claim-level faithfulness with a bootstrap CI, and each unsupported claim *localized* to its sentence — a hallucination is an address, not a lower number |
+| Trust the LLM judge that grades faithfulness | **The grader gets graded**: the verifier is measured against known-truth controls, and faithfulness is *bias-corrected* for its sensitivity/specificity (Rogan–Gladen); a chance-level verifier is refused, not averaged |
+| Assume a high faithfulness score means retrieval worked | **Attribution probe**: re-answers with the context removed, swapped and polluted — separates answers *earned by retrieval* from parametric memory |
 
 The output is a **fingerprint** — five dimensions with uncertainty — not a single number:
 
@@ -61,8 +63,20 @@ caliper compare --adapter hf --judge-model meta-llama/Llama-3.3-70B-Instruct \
 # Offline demo: inject a known 30% hallucination rate and watch it get recovered,
 # with each fabricated claim localized to its sample:
 caliper rag --adapter simulated --hallucination-rate 0.3 --n-samples 10
+
+# The grader gets graded: give the verifier a rubber-stamping bias (specificity
+# 0.55) and watch the raw score inflate while the corrected one holds:
+caliper rag --adapter simulated --hallucination-rate 0.5 \
+    --verifier-sensitivity 0.95 --verifier-specificity 0.55
+
+# Retrieval has to prove it did the work. A model recalling the answer from
+# memory still scores faithfulness 0.90 — Ragas/TruLens would call that
+# excellent — while `earned_by_retrieval` collapses to 0.00:
+caliper rag --adapter simulated --context-reliance 0.0 --hallucination-rate 0.0
+
 # A real model on your own RAG bank (feature-extraction embeddings for relevance):
-caliper rag --adapter hf --model Qwen/Qwen2.5-7B-Instruct --rag-bank my_rag.json
+caliper rag --adapter hf --model Qwen/Qwen2.5-7B-Instruct --rag-bank my_rag.json \
+    --out reports/          # writes JSON + a self-contained HTML report
 ```
 
 `caliper run --suite fingerprint` writes a JSON report and a self-contained HTML
@@ -107,9 +121,20 @@ flowchart LR
   unsupported claims (hallucinations localized to the sentence). A dependency-light native
   implementation; the optional `[rag]` extra bridges to real Ragas/TruLens
   (`caliper.rag.bridge`) when you want the standard numbers too.
+- **Verifier audit** (`caliper.rag.audit`) — the model grading faithfulness is itself an
+  instrument, so it gets measured: sensitivity and specificity against positive controls
+  (sentences from the sample's own passages) and negative controls (sentences from another
+  sample's), then faithfulness is **bias-corrected** by the Rogan–Gladen estimator
+  `(p_obs + sp − 1) / (se + sp − 1)`. A verifier no better than chance is reported as
+  unusable rather than silently trusted.
+- **Attribution probe** (`caliper.rag.attribution`) — re-asks each question with the
+  context **removed**, **swapped** for another question's passages, and **polluted** with
+  an irrelevant one. `parametric_leakage`, `context_sensitivity` and
+  `distractor_stability` combine into `earned_by_retrieval`: a model that answers
+  identically without its context did not earn the score.
 - **Everything is testable against ground truth**: `SimulatedSubject` has a known θ,
   calibration skew, robustness and contamination status; the test suite verifies each
-  estimator recovers what was injected (`tests/`, 47 tests, no network).
+  estimator recovers what was injected (`tests/`, 64 tests, no network).
 
 ### A note on the bundled item bank
 
@@ -134,8 +159,10 @@ The [Hugging Face Space](https://huggingface.co/spaces/abhimittal/caliper) has f
    audit catch it; or run a real judge with your token
 3. **🌀 Robustness** — preview perturbations, run the invariance suite
 4. **🫆 Full fingerprint** — the whole battery + downloadable JSON/HTML report
-5. **🔗 RAG grounding** — inject a hallucination rate, watch faithfulness recover it,
-   and see each unsupported claim localized — with confidence intervals throughout
+5. **🔗 RAG grounding** — inject a hallucination rate and watch faithfulness recover it,
+   with every unsupported claim localized; then bias the *verifier* and watch the raw
+   score go wrong while the corrected one holds, or set context reliance to 0 and watch
+   `earned_by_retrieval` collapse while faithfulness stays high
 
 Demo mode runs entirely on simulated subjects (no token, no cost). Live mode uses your
 HF token against Inference Providers (`chat-completion`), session-only.
@@ -151,6 +178,7 @@ src/caliper/
   calibration/     ECE, Brier, risk–coverage
   contamination/   continuation & option-recall probes, n-gram screening
   rag/             claim-level faithfulness + answer/context relevance (with CIs),
+                   verifier audit & bias correction, retrieval-attribution probe,
                    optional Ragas/TruLens bridge, bundled demo RAG bank
   report/          fingerprint assembly, self-contained HTML reports
   data/            bundled item bank (250 ARC-Challenge items)
@@ -163,7 +191,7 @@ tests/             ground-truth recovery tests for every estimator
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 47 tests, ~5s, fully offline
+pytest -q          # 64 tests, ~4s, fully offline
 ruff check src tests scripts
 ```
 

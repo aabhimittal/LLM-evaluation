@@ -17,11 +17,7 @@ import numpy as np
 
 from caliper.adapters.base import ModelAdapter
 from caliper.rag.prompts import format_context_relevance, format_question_generation
-
-
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    return float(np.dot(a, b) / denom) if denom > 0 else 0.0
+from caliper.rag.stats import bootstrap_ci, cosine
 
 
 @dataclass
@@ -62,15 +58,11 @@ def answer_relevance(
     except NotImplementedError:
         return AnswerRelevance(score=0.0, ci95=(0.0, 0.0), generated_questions=gen)
     q_vec = vecs[0]
-    sims = [_cosine(q_vec, vecs[i + 1]) for i in range(len(gen))]
-    arr = np.asarray(sims, dtype=float)
-    boot = np.random.default_rng(seed)
-    means = [
-        float(np.mean(arr[boot.integers(0, len(arr), size=len(arr))]))
-        for _ in range(n_boot)
-    ]
-    ci = (float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
-    return AnswerRelevance(score=float(arr.mean()), ci95=ci, generated_questions=gen)
+    sims = [cosine(q_vec, vecs[i + 1]) for i in range(len(gen))]
+    ci = bootstrap_ci(sims, seed=seed, n_boot=n_boot)
+    return AnswerRelevance(
+        score=float(np.mean(sims)), ci95=ci, generated_questions=gen
+    )
 
 
 def parse_relevant(text: str) -> bool | None:

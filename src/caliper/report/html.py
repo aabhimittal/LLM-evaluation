@@ -9,8 +9,8 @@ from __future__ import annotations
 import html
 import math
 
-from caliper.report.fingerprint import Fingerprint
 from caliper.rag.suite import RagReport
+from caliper.report.fingerprint import Fingerprint
 
 _CSS = """
 :root {
@@ -154,8 +154,10 @@ def _line_chart(
     def sy(y: float) -> float:
         return height - pad_b - (y - y0) / (y1 - y0) * (height - pad_t - pad_b)
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="{html.escape(aria)}">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="{html.escape(aria)}">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         gy = y0 + frac * (y1 - y0)
         parts.append(
@@ -214,8 +216,10 @@ def _reliability_svg(bins: list[dict], width: int = 420, height: int = 220) -> s
     def sy(y: float) -> float:
         return height - pad_b - y * (height - pad_t - pad_b)
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="Reliability diagram">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="Reliability diagram">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         parts.append(
             f'<line x1="{pad_l}" y1="{sy(frac):.1f}" x2="{width - pad_r}" y2="{sy(frac):.1f}" '
@@ -263,8 +267,10 @@ def _bar_chart(values: list[float], *, width: int = 420, height: int = 200,
     def sy(y: float) -> float:
         return pad_t + (1.0 - y) * plot_h
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-             f'aria-label="{html.escape(aria)}">']
+    parts = [(
+        f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
+        f'aria-label="{html.escape(aria)}">'
+    )]
     for frac in (0.0, 0.5, 1.0):
         parts.append(
             f'<line x1="{pad_l}" y1="{sy(frac):.1f}" x2="{width - pad_r}" y2="{sy(frac):.1f}" '
@@ -310,6 +316,61 @@ def render_rag_html(report: RagReport, *, model_name: str = "model",
         <div class="d">of {report.n_claims} · verifier agreement {_fmt(report.mean_verifier_agreement)}</div></div>
     </div>"""
 
+    corrected_card = ""
+    if report.verifier is not None:
+        v = report.verifier
+        if report.faithfulness_corrected is not None:
+            c_lo, c_hi = report.faithfulness_corrected_ci95 or (0.0, 0.0)
+            shift = report.faithfulness_corrected - report.faithfulness
+            verdict = (
+                f'<div class="v">{_fmt(report.faithfulness_corrected)}</div>'
+                f'<div class="d">95% CI {_fmt(c_lo)} … {_fmt(c_hi)} · '
+                f"moves the raw score by {shift:+.2f}</div>"
+            )
+        else:
+            verdict = ('<div class="v">n/a</div><div class="d">verifier carries no '
+                       "usable signal (sensitivity + specificity ≤ 1)</div>")
+        corrected_card = f"""
+    <div class="tiles">
+      <div class="tile"><div class="k">Faithfulness, corrected for verifier error</div>
+        {verdict}</div>
+      <div class="tile"><div class="k">Verifier sensitivity</div>
+        <div class="v">{_fmt(v.sensitivity)}</div>
+        <div class="d">95% CI {_fmt(v.sensitivity_ci95[0])} … {_fmt(v.sensitivity_ci95[1])}
+          · catches real support</div></div>
+      <div class="tile"><div class="k">Verifier specificity</div>
+        <div class="v">{_fmt(v.specificity)}</div>
+        <div class="d">95% CI {_fmt(v.specificity_ci95[0])} … {_fmt(v.specificity_ci95[1])}
+          · rejects foreign claims</div></div>
+      <div class="tile"><div class="k">Verifier order-flip rate</div>
+        <div class="v">{_fmt(v.order_flip_rate)}</div>
+        <div class="d">verdict changed when passages were reordered</div></div>
+    </div>"""
+
+    attribution_card = ""
+    if report.attribution is not None:
+        a = report.attribution
+        attribution_card = f"""
+  <h2>Was the answer earned by retrieval?</h2>
+  <div class="tiles">
+    <div class="tile"><div class="k">Earned by retrieval</div>
+      <div class="v">{_fmt(a.earned_by_retrieval)}</div>
+      <div class="d">1 = the answer depends on the retrieved passages</div></div>
+    <div class="tile"><div class="k">Parametric leakage</div>
+      <div class="v">{_fmt(a.parametric_leakage)}</div>
+      <div class="d">similarity to the closed-book answer · lower is better</div></div>
+    <div class="tile"><div class="k">Context sensitivity</div>
+      <div class="v">{_fmt(a.context_sensitivity)}</div>
+      <div class="d">how much the answer changes on foreign context</div></div>
+    <div class="tile"><div class="k">Distractor stability</div>
+      <div class="v">{_fmt(a.distractor_stability)}</div>
+      <div class="d">answer held up when an irrelevant passage was added</div></div>
+  </div>
+  <div class="card"><div class="note">The same question is re-asked with the context
+    <b>removed</b>, <b>swapped</b> for another question's passages, and <b>polluted</b>
+    with an irrelevant one. A model that answers identically without its context did
+    not earn the score through retrieval — the retriever is decorative.</div></div>"""
+
     unsup_rows = "".join(
         f'<tr><td>{html.escape(str(e["sample_id"]))}</td>'
         f'<td>{html.escape(str(e["claim"]))[:120]}</td></tr>'
@@ -334,6 +395,7 @@ def render_rag_html(report: RagReport, *, model_name: str = "model",
   <div class="sub">{report.n_samples} samples{(" · bank " + html.escape(bank_name)) if bank_name else ""}
     · faithfulness, answer &amp; context relevance, each with a 95% bootstrap CI</div>
   {tiles}
+  {corrected_card}
   <div class="cards">
     <div class="card"><h3>Faithfulness by sample</h3>
       <div class="note">fraction of each answer's claims supported by the context;
@@ -341,10 +403,12 @@ def render_rag_html(report: RagReport, *, model_name: str = "model",
       {_bar_chart(per_sample_faith, y_label="faithfulness", aria="Faithfulness by sample")}</div>
     <div class="card"><h3>What sets this apart</h3>
       <div class="note">Ragas/TruLens report one point number per metric. Caliper
-        ships every metric with a confidence interval and localizes each
-        unsupported claim to the exact sentence, so a hallucination is an
-        address, not a lower score.</div></div>
+        ships every metric with a confidence interval, localizes each unsupported
+        claim to the exact sentence, <b>audits the verifier</b> that produced the
+        grade and corrects the score for its measured error rates, and probes
+        whether the answer was <b>earned by retrieval</b> at all.</div></div>
   </div>
+  {attribution_card}
   {unsup_table}
   <div class="foot">Generated by <b>llm-caliper</b> — faithfulness is measured by
     decomposing each answer into atomic claims and verifying each against the

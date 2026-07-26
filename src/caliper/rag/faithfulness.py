@@ -24,6 +24,7 @@ from caliper.rag.prompts import (
     format_claim_decomposition,
     format_nli_verify,
 )
+from caliper.rag.stats import bootstrap_ci
 
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
@@ -102,18 +103,6 @@ class FaithfulnessReport:
     verdicts: list[ClaimVerdict] = field(default_factory=list)
 
 
-def _bootstrap_fraction_ci(flags: list[float], seed: int, n_boot: int) -> tuple[float, float]:
-    if not flags:
-        return (0.0, 0.0)
-    arr = np.asarray(flags, dtype=float)
-    boot = np.random.default_rng(seed)
-    means = [
-        float(np.mean(arr[boot.integers(0, len(arr), size=len(arr))]))
-        for _ in range(n_boot)
-    ]
-    return (float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
-
-
 def evaluate_faithfulness(
     adapter: ModelAdapter,
     answer: str,
@@ -131,7 +120,7 @@ def evaluate_faithfulness(
     ]
     flags = [1.0 if v.supported else 0.0 for v in verdicts]
     fraction = float(np.mean(flags)) if flags else 0.0
-    ci = _bootstrap_fraction_ci(flags, seed, n_boot)
+    ci = bootstrap_ci(flags, seed=seed, n_boot=n_boot)
     unsupported = [v.claim for v in verdicts if not v.supported]
     mean_agreement = float(np.mean([v.agreement for v in verdicts])) if verdicts else 1.0
     return FaithfulnessReport(

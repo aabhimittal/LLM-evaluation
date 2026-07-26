@@ -14,23 +14,13 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from caliper.adapters.base import ModelAdapter
+from caliper.rag.attribution import AttributionReport, probe_attribution
+from caliper.rag.audit import VerifierAudit, audit_verifier, corrected_faithfulness
 from caliper.rag.faithfulness import evaluate_faithfulness
 from caliper.rag.prompts import RAG_ANSWER_SYSTEM, format_rag_answer
 from caliper.rag.relevance import answer_relevance, context_precision
+from caliper.rag.stats import bootstrap_ci
 from caliper.rag.types import RagBank
-
-
-def _bootstrap_ci(values: list[float], seed: int, n_boot: int) -> tuple[float, float]:
-    """95% bootstrap percentile interval over a list of per-sample values."""
-    if not values:
-        return (0.0, 0.0)
-    arr = np.asarray(values, dtype=float)
-    boot = np.random.default_rng(seed)
-    means = [
-        float(np.mean(arr[boot.integers(0, len(arr), size=len(arr))]))
-        for _ in range(n_boot)
-    ]
-    return (float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5)))
 
 
 @dataclass
@@ -47,12 +37,27 @@ class RagReport:
     n_unsupported_claims: int
     unsupported_examples: list[dict] = field(default_factory=list)
     per_sample: list[dict] = field(default_factory=list)
+    # Optional probes (see caliper.rag.audit / caliper.rag.attribution)
+    verifier: VerifierAudit | None = None
+    faithfulness_corrected: float | None = None
+    faithfulness_corrected_ci95: tuple[float, float] | None = None
+    attribution: AttributionReport | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["faithfulness_ci95"] = list(self.faithfulness_ci95)
         d["answer_relevance_ci95"] = list(self.answer_relevance_ci95)
         d["context_precision_ci95"] = list(self.context_precision_ci95)
+        if self.faithfulness_corrected_ci95 is not None:
+            d["faithfulness_corrected_ci95"] = list(self.faithfulness_corrected_ci95)
+        if self.verifier is not None:
+            d["verifier"]["sensitivity_ci95"] = list(self.verifier.sensitivity_ci95)
+            d["verifier"]["specificity_ci95"] = list(self.verifier.specificity_ci95)
+        if self.attribution is not None:
+            for key in ("parametric_leakage_ci95", "context_sensitivity_ci95",
+                        "distractor_stability_ci95"):
+                d["attribution"][key] = list(getattr(self.attribution, key))
+            d["attribution"]["earned_by_retrieval"] = self.attribution.earned_by_retrieval
         return d
 
     def to_json(self, indent: int = 2) -> str:
@@ -69,9 +74,18 @@ def evaluate_rag(
     n_verify_samples: int = 3,
     seed: int = 0,
     n_boot: int = 500,
+    with_audit: bool = False,
+    with_attribution: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> RagReport:
-    """Score a model's grounding on a RAG bank."""
+    """Score a model's grounding on a RAG bank.
+
+    ``with_audit`` measures the verifier's own sensitivity/specificity against
+    known-truth controls and adds a **bias-corrected** faithfulness estimate.
+    ``with_attribution`` re-answers each question with the context ablated,
+    swapped and polluted, to test whether the answer was earned by retrieval.
+    Both add model calls, so they are opt-in.
+    """
     bank = bank if bank is not None else RagBank.bundled()
     say = progress or (lambda _msg: None)
     rng = np.random.default_rng(seed)
@@ -123,17 +137,37 @@ def evaluate_rag(
             "context_precision": prec.score,
         })
 
+    faithfulness = float(np.mean(faiths)) if faiths else 0.0
+
+    audit = None
+    corrected = corrected_ci = None
+    if with_audit:
+        say("auditing the verifier against known-truth controls…")
+        audit = audit_verifier(adapter, bank, n_probes=min(n, 12), seed=seed,
+                               n_boot=n_boot)
+        corrected, corrected_ci = corrected_faithfulness(faithfulness, audit)
+
+    attribution = None
+    if with_attribution:
+        say("attribution probe: ablating, swapping and polluting the context…")
+        attribution = probe_attribution(adapter, bank, n_samples=min(n, 10),
+                                        seed=seed, n_boot=n_boot)
+
     return RagReport(
         n_samples=n,
-        faithfulness=float(np.mean(faiths)) if faiths else 0.0,
-        faithfulness_ci95=_bootstrap_ci(faiths, seed, n_boot),
+        faithfulness=faithfulness,
+        faithfulness_ci95=bootstrap_ci(faiths, seed=seed, n_boot=n_boot),
         answer_relevance=float(np.mean(rels)) if rels else 0.0,
-        answer_relevance_ci95=_bootstrap_ci(rels, seed + 1, n_boot),
+        answer_relevance_ci95=bootstrap_ci(rels, seed=seed + 1, n_boot=n_boot),
         context_precision=float(np.mean(precs)) if precs else 0.0,
-        context_precision_ci95=_bootstrap_ci(precs, seed + 2, n_boot),
+        context_precision_ci95=bootstrap_ci(precs, seed=seed + 2, n_boot=n_boot),
         mean_verifier_agreement=float(np.mean(agreements)) if agreements else 1.0,
         n_claims=total_claims,
         n_unsupported_claims=sum(p["n_unsupported"] for p in per_sample),
         unsupported_examples=unsupported_examples,
         per_sample=per_sample,
+        verifier=audit,
+        faithfulness_corrected=corrected,
+        faithfulness_corrected_ci95=corrected_ci,
+        attribution=attribution,
     )

@@ -24,7 +24,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from caliper.rag.types import RagBank, RagSample  # noqa: E402
+from caliper.rag.types import RagBank, RagSample
 
 API = "https://datasets-server.huggingface.co/rows"
 DATASET = "rajpurkar/squad_v2"
