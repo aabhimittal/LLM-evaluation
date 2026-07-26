@@ -33,6 +33,15 @@ def format_rag_answer(question: str, contexts: list[str]) -> str:
     )
 
 
+def format_closed_book(question: str) -> str:
+    """Ask the question with no retrieved context — the attribution control."""
+    return (
+        "Answer the question from your own knowledge, without any provided "
+        "context. Write the answer as a few short factual sentences.\n\n"
+        f"Question: {question}"
+    )
+
+
 def format_claim_decomposition(answer: str) -> str:
     return (
         "Break the following answer into atomic factual claims, one per line. "

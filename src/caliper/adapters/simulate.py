@@ -289,6 +289,15 @@ class SimulatedRAGSubject(ModelAdapter):
     The model is internally consistent: supported claims quote the context
     verbatim, so the built-in NLI verifier (token-overlap) marks exactly the
     fabricated claims as unsupported.
+
+    Two further knobs make the *auditing* instruments testable:
+
+    - ``verifier_sensitivity`` / ``verifier_specificity``: the accuracy of this
+      model when it acts as the fact-checker, so the verifier audit and the
+      bias correction can be validated against known error rates.
+    - ``context_reliance``: the fraction of genuine claims actually derived
+      from the retrieved passages rather than parametric memory, which the
+      attribution probe recovers.
     """
 
     def __init__(
@@ -298,6 +307,10 @@ class SimulatedRAGSubject(ModelAdapter):
         context_precision: float = 0.75,
         seed: int = 0,
         n_claims: int = 5,
+        verifier_sensitivity: float = 1.0,
+        verifier_specificity: float = 1.0,
+        context_reliance: float = 1.0,
+        bank=None,
         name: str | None = None,
     ):
         self.hallucination_rate = hallucination_rate
@@ -305,6 +318,21 @@ class SimulatedRAGSubject(ModelAdapter):
         self.context_precision = context_precision
         self.seed = seed
         self.n_claims = n_claims
+        self.verifier_sensitivity = verifier_sensitivity
+        self.verifier_specificity = verifier_specificity
+        self.context_reliance = context_reliance
+        # Optional RagBank. With it, parametric recall reproduces the *known
+        # answer* to the question, which the passages happen to support — the
+        # realistic "faithful but unearned" case that only the attribution
+        # probe can catch. Without it, recall is generic filler.
+        self.bank = bank
+        self._recall = {}
+        if bank is not None:
+            self._recall = {
+                " ".join(_tokens(s.question)): s.reference_answer
+                for s in bank.samples
+                if s.reference_answer
+            }
         self.name = name or f"simulated-rag(halluc={hallucination_rate:.2f})"
 
     # -- adapter interface ------------------------------------------------
@@ -320,10 +348,12 @@ class SimulatedRAGSubject(ModelAdapter):
         prompt = messages[-1]["content"]
         if "Answer the question using only the provided context" in prompt:
             return self._answer(prompt)
+        if "Answer the question from your own knowledge" in prompt:
+            return self._closed_book(prompt)
         if "Break the following answer into atomic factual claims" in prompt:
             return self._decompose(prompt)
         if "Reply SUPPORTED or NOT_SUPPORTED" in prompt:
-            return self._verify(prompt)
+            return self._verify(prompt, seed or 0)
         if "Generate a question that this answer would answer" in prompt:
             return self._generate_question(prompt, seed or 0)
         if "Reply RELEVANT or IRRELEVANT" in prompt:
@@ -347,6 +377,32 @@ class SimulatedRAGSubject(ModelAdapter):
 
     # -- behaviours --------------------------------------------------------
 
+    def _parametric_claim(self, question: str, j: int) -> str:
+        """A claim recalled from 'memory' — depends on the question, not the context.
+
+        When a bank was supplied the model recalls the *correct* answer, which
+        the retrieved passages also support. Such a claim passes the
+        faithfulness check while owing nothing to retrieval, so faithfulness
+        alone cannot distinguish it — the attribution probe can.
+        """
+        known = self._recall.get(" ".join(_tokens(question)))
+        if known:
+            # Rotate the recalled answer so each claim is worded differently
+            # while carrying the same facts — a memorizing model restating what
+            # it already knows, which the passages happen to corroborate.
+            words = re.findall(r"[A-Za-z0-9']+", known)
+            if words:
+                cut = j % len(words)
+                return " ".join(words[cut:] + words[:cut])
+        toks = [t for t in re.findall(r"[A-Za-z0-9']+", question) if len(t) > 3][:6]
+        return ("From prior knowledge " + " ".join(toks or ["topic"])
+                + f" involves established factor {j}")
+
+    @staticmethod
+    def _fabricated_claim(j: int) -> str:
+        return (f"Additionally a fabricated detail zeta{j} describes an "
+                f"unrelated tangent numbered {j}")
+
     def _answer(self, prompt: str) -> str:
         contexts = self._contexts(prompt)
         question = self._after(prompt, "Question:")
@@ -355,15 +411,31 @@ class SimulatedRAGSubject(ModelAdapter):
         # 1 - hallucination_rate tightly (up to rounding on k claims).
         n_bad = int(round(k * self.hallucination_rate))
         bad = set(_rng(self.seed, "rag-halluc", question).permutation(k)[:n_bad].tolist())
+        # Of the genuine claims, only a `context_reliance` share is actually
+        # read off the retrieved passages; the rest is parametric recall.
+        genuine = [j for j in range(k) if j not in bad]
+        n_ctx = int(round(len(genuine) * self.context_reliance))
+        from_context = set(genuine[:n_ctx])
+
         sentences = []
         for j in range(k):
-            if j not in bad and contexts:
+            if j in bad:
+                sentence = self._fabricated_claim(j)
+            elif j in from_context and contexts:
                 words = re.findall(r"[A-Za-z0-9']+", contexts[j % len(contexts)])[:10]
                 sentence = " ".join(words) if words else f"detail {j}"
             else:
-                sentence = (f"Additionally a fabricated detail zeta{j} describes an "
-                            f"unrelated tangent numbered {j}")
+                sentence = self._parametric_claim(question, j)
             sentences.append(sentence.rstrip(".").strip())
+        return ". ".join(sentences) + "."
+
+    def _closed_book(self, prompt: str) -> str:
+        """No context available — everything comes from parametric memory."""
+        question = self._after(prompt, "Question:")
+        sentences = [
+            self._parametric_claim(question, j).rstrip(".").strip()
+            for j in range(self.n_claims)
+        ]
         return ". ".join(sentences) + "."
 
     def _decompose(self, prompt: str) -> str:
@@ -371,7 +443,7 @@ class SimulatedRAGSubject(ModelAdapter):
         parts = [s.strip().rstrip(".") for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
         return "\n".join(p for p in parts if p)
 
-    def _verify(self, prompt: str) -> str:
+    def _verify(self, prompt: str, call_seed: int) -> str:
         contexts = self._contexts(prompt)
         claim = self._after(prompt, "Claim:")
         ctx_tokens: set[str] = set()
@@ -381,7 +453,18 @@ class SimulatedRAGSubject(ModelAdapter):
         if not claim_tokens:
             return "NOT_SUPPORTED"
         overlap = len(claim_tokens & ctx_tokens) / len(claim_tokens)
-        return "SUPPORTED" if overlap >= 0.6 else "NOT_SUPPORTED"
+        truth = overlap >= 0.6
+        # An imperfect fact-checker: miss real support at rate
+        # 1 - sensitivity, and invent support at rate 1 - specificity. Seeded
+        # on the call so repeated samples of the same claim can disagree,
+        # which is what the audit's self-agreement measures.
+        rng = _rng(self.seed, "rag-verify", claim, call_seed)
+        says_supported = (
+            rng.random() < self.verifier_sensitivity
+            if truth
+            else rng.random() >= self.verifier_specificity
+        )
+        return "SUPPORTED" if says_supported else "NOT_SUPPORTED"
 
     def _generate_question(self, prompt: str, seed: int) -> str:
         answer = self._after(prompt, "Answer:")

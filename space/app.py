@@ -242,12 +242,14 @@ def ui_fingerprint(mode, model_id, token, theta, robustness, skew, contaminated,
 
 # ---------------------------------------------------------------- rag
 
-def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, n_samples,
-           progress=gr.Progress()):
+def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, ctx_reliance,
+           ver_se, ver_sp, n_samples, progress=gr.Progress()):
     if mode.startswith("Demo"):
         adapter = SimulatedRAGSubject(
             hallucination_rate=halluc, answer_relevance=ans_rel,
-            context_precision=ctx_prec, seed=0,
+            context_precision=ctx_prec, context_reliance=ctx_reliance,
+            verifier_sensitivity=ver_se, verifier_specificity=ver_sp,
+            bank=RAG_BANK, seed=0,
         )
     else:
         if not model_id.strip():
@@ -267,7 +269,8 @@ def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, n_samples,
 
     try:
         report = evaluate_rag(adapter, RAG_BANK, n_samples=n, seed=0,
-                              n_boot=300, progress=report_progress)
+                              n_boot=300, with_audit=True, with_attribution=True,
+                              progress=report_progress)
     except Exception as e:  # noqa: BLE001
         raise gr.Error(f"RAG run failed: {e}") from e
 
@@ -278,9 +281,34 @@ def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, n_samples,
         f"- answer relevance **{report.answer_relevance:.2f}** · "
         f"context precision **{report.context_precision:.2f}**\n"
         f"- **{report.n_unsupported_claims}** hallucinated claims localized · "
-        f"verifier self-agreement {report.mean_verifier_agreement:.2f}\n\n"
-        "*Unlike a single Ragas/TruLens score, every number carries its "
-        "uncertainty and each unsupported claim is pinned to its sample.*"
+        f"verifier self-agreement {report.mean_verifier_agreement:.2f}\n"
+    )
+    if report.verifier is not None:
+        v = report.verifier
+        if report.faithfulness_corrected is not None:
+            shift = report.faithfulness_corrected - report.faithfulness
+            summary += (
+                f"- **verifier-corrected faithfulness "
+                f"{report.faithfulness_corrected:.2f}** ({shift:+.2f}) — the grader "
+                f"itself scores se {v.sensitivity:.2f} / sp {v.specificity:.2f}\n"
+            )
+        else:
+            summary += (
+                f"- ⚠️ the verifier carries **no usable signal** "
+                f"(se {v.sensitivity:.2f} + sp {v.specificity:.2f} ≤ 1): "
+                "faithfulness here cannot be trusted or corrected\n"
+            )
+    if report.attribution is not None:
+        a = report.attribution
+        summary += (
+            f"- **earned by retrieval {a.earned_by_retrieval:.2f}** — parametric "
+            f"leakage {a.parametric_leakage:.2f}, context sensitivity "
+            f"{a.context_sensitivity:.2f}\n"
+        )
+    summary += (
+        "\n*Unlike a single Ragas/TruLens score, every number carries its "
+        "uncertainty, each unsupported claim is pinned to its sample, the "
+        "grader is itself audited, and retrieval has to prove it did the work.*"
     )
     if report.unsupported_examples:
         rows = ["", "**Localized hallucinations** (claims not entailed by the context):",
@@ -437,8 +465,16 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
             "split into atomic claims; every claim is verified against the retrieved "
             "context by a sampled NLI judge. You get faithfulness, answer relevance and "
             "context precision — each with a **95% confidence interval** — plus the exact "
-            "list of **unsupported (hallucinated) claims**. In demo mode you inject a "
-            "known hallucination rate and watch it get recovered."
+            "list of **unsupported (hallucinated) claims**.\n\n"
+            "Two things no other RAG evaluator does:\n"
+            "1. **The grader gets graded.** The verifier is measured against known-truth "
+            "controls, and faithfulness is *bias-corrected* for its sensitivity and "
+            "specificity (Rogan–Gladen). Drag the verifier sliders below and watch the raw "
+            "score go wrong while the corrected one holds.\n"
+            "2. **Retrieval has to prove it did the work.** The question is re-asked with "
+            "the context removed, swapped and polluted. Set *context reliance* to 0 and "
+            "the model answers from memory — faithfulness stays high, but *earned by "
+            "retrieval* collapses to 0."
         )
         with gr.Row():
             rag_halluc = gr.Slider(0.0, 1.0, value=0.3, step=0.05,
@@ -447,6 +483,13 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
                                     label="Demo: answer relevance")
             rag_ctx_prec = gr.Slider(0.0, 1.0, value=0.75, step=0.05,
                                      label="Demo: context precision")
+        with gr.Row():
+            rag_ctx_reliance = gr.Slider(0.0, 1.0, value=1.0, step=0.05,
+                                         label="Demo: context reliance (0 = answers from memory)")
+            rag_ver_se = gr.Slider(0.3, 1.0, value=1.0, step=0.05,
+                                   label="Demo verifier: sensitivity")
+            rag_ver_sp = gr.Slider(0.3, 1.0, value=1.0, step=0.05,
+                                   label="Demo verifier: specificity")
         rag_n = gr.Slider(4, len(RAG_BANK), value=min(10, len(RAG_BANK)), step=1,
                           label="RAG samples to score")
         rag_button = gr.Button("Run RAG grounding suite", variant="primary")
@@ -454,7 +497,8 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
         rag_iframe = gr.HTML()
         rag_button.click(
             ui_rag,
-            inputs=[mode, model_id, token, rag_halluc, rag_ans_rel, rag_ctx_prec, rag_n],
+            inputs=[mode, model_id, token, rag_halluc, rag_ans_rel, rag_ctx_prec,
+                    rag_ctx_reliance, rag_ver_se, rag_ver_sp, rag_n],
             outputs=[rag_summary, rag_iframe],
         )
 
