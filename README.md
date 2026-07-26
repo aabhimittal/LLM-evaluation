@@ -85,6 +85,10 @@ caliper rag --adapter hf --model Qwen/Qwen2.5-7B-Instruct --rag-bank my_rag.json
 caliper duel --adapter simulated --theta 0.6 --theta-b -1.2
 #   -> decided at item 42 of a 200-item budget; peeking cost nothing
 
+# Grade a judge against human labels before trusting it to rank anything:
+caliper judge-card --adapter hf --judge-model meta-llama/Llama-3.3-70B-Instruct \
+    --data examples/gold_preferences.jsonl
+
 # Ask what the benchmark itself can measure, and audit it for biased items:
 caliper diagnose --test-length 40
 caliper dif --matrix matrix.csv --groups groups.csv
@@ -162,7 +166,7 @@ flowchart LR
   identically without its context did not earn the score.
 - **Everything is testable against ground truth**: `SimulatedSubject` has a known θ,
   calibration skew, robustness and contamination status; the test suite verifies each
-  estimator recovers what was injected (`tests/`, 98 tests, no network). The
+  estimator recovers what was injected (`tests/`, 101 tests, no network). The
   anytime-validity guarantee is *measured*, not asserted: 400 simulated null
   comparisons with adversarial peeking must keep the false-positive rate under α.
 
@@ -222,6 +226,7 @@ src/caliper/
                    optional Ragas/TruLens bridge, bundled demo RAG bank
   report/          fingerprint assembly, self-contained HTML reports
   data/            bundled item bank (250 ARC-Challenge items)
+examples/          runnable demos + a labeled preference set for judge grading
 scripts/           item-bank & RAG-bank builders (HF datasets-server), Space deployment
 space/             the Gradio app published to HF Spaces
 tests/             ground-truth recovery tests for every estimator
@@ -231,7 +236,7 @@ tests/             ground-truth recovery tests for every estimator
 
 ```bash
 pip install -e ".[dev]"
-pytest -q          # 98 tests, ~13s, fully offline
+pytest -q          # 101 tests, ~13s, fully offline
 ruff check src tests scripts
 ```
 

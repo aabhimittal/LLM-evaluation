@@ -26,7 +26,7 @@ from caliper.diagnostics import (
 )
 from caliper.dif import detect_dif
 from caliper.irt import p_correct, run_adaptive
-from caliper.judge import PairwiseJudge
+from caliper.judge import PairwiseJudge, judge_report_card
 from caliper.rag import RagBank, evaluate_rag
 from caliper.report import render_html, render_rag_html, run_fingerprint
 from caliper.report.html import _line_chart, _radar_svg
@@ -333,6 +333,142 @@ def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, ctx_reliance,
         f'srcdoc="{html_report.replace("&", "&amp;").replace(chr(34), "&quot;")}"></iframe>'
     )
     return summary, iframe
+# ---------------------------------------------------------------- report card
+
+_GOLD_SET = [
+    (
+        "Explain why the sky is blue in two sentences.",
+        (
+            "Sunlight scatters off air molecules, and short-wavelength blue light "
+            "scatters far more than red (Rayleigh scattering), so the light arriving "
+            "from all over the sky is dominated by blue."
+        ),
+        "The sky is blue because it reflects the ocean.",
+    ),
+    (
+        "What causes ocean tides?",
+        (
+            "Tides come from the Moon's gravitational gradient across the Earth, "
+            "raising bulges on the near and far sides; the Earth rotates through both, "
+            "giving roughly two high tides a day."
+        ),
+        "Tides happen because wind pushes the water around.",
+    ),
+    (
+        "Explain the difference between correlation and causation.",
+        (
+            "Correlation means two variables move together; causation means changing "
+            "one changes the other. Ice-cream sales correlate with drownings, but the "
+            "common cause is hot weather."
+        ),
+        "Correlation and causation are basically the same thing.",
+    ),
+    (
+        "Why does ice float on water?",
+        (
+            "Hydrogen bonding locks water into an open hexagonal lattice on freezing, "
+            "making ice about 9% less dense than the liquid, so it floats and lakes "
+            "freeze from the top down."
+        ),
+        "Ice floats because cold things weigh less.",
+    ),
+    (
+        "What is the greenhouse effect?",
+        (
+            "Greenhouse gases pass incoming shortwave sunlight but absorb and re-emit "
+            "outgoing longwave infrared, so energy leaves more slowly and the surface "
+            "settles at a warmer equilibrium."
+        ),
+        "It is when the Earth gets hotter because of pollution.",
+    ),
+    (
+        "Explain how a vaccine trains the immune system.",
+        (
+            "A vaccine presents an antigen without causing disease; B and T cells that "
+            "recognise it expand and leave long-lived memory cells that respond much "
+            "faster on real exposure."
+        ),
+        "Vaccines put a bit of the illness in you so you get a little sick.",
+    ),
+    (
+        "Why is the base-rate fallacy dangerous in medical testing?",
+        (
+            "When a disease is rare, the large healthy population produces more false "
+            "positives than the small sick population produces true positives, so a "
+            "positive result needs Bayes' rule and the prevalence."
+        ),
+        "It is dangerous because doctors sometimes misread tests.",
+    ),
+    (
+        "Explain what an index does in a relational database.",
+        (
+            "An index is usually a B-tree mapping column values to row locations, "
+            "turning a full scan into a logarithmic lookup, at the cost of extra "
+            "storage and slower writes."
+        ),
+        "An index makes the database faster when you search.",
+    ),
+]
+
+
+def ui_report_card(mode, judge_model, token, accuracy, position_bias, verbosity_bias):
+    """Grade a judge against human labels — the only honest way to trust one."""
+    if mode.startswith("Demo"):
+        adapter = SimulatedJudge(
+            accuracy=accuracy, position_bias=position_bias,
+            verbosity_bias=verbosity_bias, seed=0,
+        )
+    else:
+        if not judge_model.strip():
+            raise gr.Error("Enter a judge model id for live mode.")
+        from caliper.adapters.hf_inference import HFInferenceAdapter
+
+        adapter = HFInferenceAdapter(model=judge_model.strip(),
+                                     token=token.strip() or None)
+
+    rng = np.random.default_rng(7)
+    judge = PairwiseJudge(adapter, n_samples=3)
+    verdicts, gold = [], []
+    try:
+        for prompt, good, bad in _GOLD_SET:
+            a_is_good = bool(rng.random() < 0.5)
+            verdicts.append(judge.compare(
+                prompt, good if a_is_good else bad, bad if a_is_good else good
+            ))
+            gold.append("A" if a_is_good else "B")
+    except Exception as e:
+        raise gr.Error(f"Judge call failed: {e}") from e
+
+    card = judge_report_card(verdicts, gold)
+    rows = "\n".join(
+        f"| {row['prompt'][:52]}… | {row['judge']} | {row['gold']} | "
+        f"{row['judge_confidence']:.2f} |"
+        for row in card.disagreements[:6]
+    )
+    disagreement_table = (
+        "\n\n**Where it disagreed with the humans**\n\n"
+        "| prompt | judge | human | judge confidence |\n|---|---|---|---|\n" + rows
+        if rows else "\n\n*No disagreements with the human labels.*"
+    )
+    return (
+        f"## {card.grade}\n\n"
+        f"| metric | value | why it matters |\n|---|---|---|\n"
+        f"| raw agreement | {card.accuracy:.2f} | inflated by the label base rate — "
+        "never quote this alone |\n"
+        f"| **Cohen's κ** | **{card.kappa:+.2f}** | agreement after removing chance; "
+        "the number that counts |\n"
+        f"| excess position bias | {card.excess_position_bias:+.2f} | judge's "
+        "slot-A preference *beyond* the humans' |\n"
+        f"| excess verbosity bias | {card.excess_verbosity_bias:+.2f} | judge's "
+        "preference for longer answers *beyond* the humans' |\n"
+        f"| confidence AUC | {card.confidence_auc:.2f} | does its own confidence "
+        "rank its correct calls above its wrong ones? |\n"
+        f"| position-flip rate | {card.position_flip_rate:.2f} | how often the "
+        "verdict reverses when A and B swap seats |\n"
+        + disagreement_table
+    )
+
+
 # ---------------------------------------------------------------- duel
 
 def ui_duel(mode, model_id, token, theta, robustness, skew, contaminated,
@@ -597,6 +733,24 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
             inputs=[mode, judge_model, token, judge_prompt, resp_a, resp_b,
                     accuracy, position_bias, verbosity_bias],
             outputs=[judge_summary, judge_votes],
+        )
+
+        gr.Markdown("---\n### Report card — should you trust this judge at all?")
+        gr.Markdown(
+            "\"Our judge agrees with humans 80% of the time\" is a meaningless "
+            "headline: on a 70/30 split, a judge that always answers *A* scores "
+            "70% while knowing nothing. This grades the judge on a set of "
+            "human-labelled comparisons using chance-corrected agreement, bias "
+            "**in excess of the humans' own**, and whether its confidence "
+            "actually tracks its correctness."
+        )
+        card_button = gr.Button("Grade this judge against human labels")
+        card_out = gr.Markdown()
+        card_button.click(
+            ui_report_card,
+            inputs=[mode, judge_model, token, accuracy, position_bias,
+                    verbosity_bias],
+            outputs=[card_out],
         )
 
     with gr.Tab("🌀 Robustness"):

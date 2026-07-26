@@ -26,6 +26,11 @@ Run two models head-to-head and stop the moment the winner is decided
     caliper duel --adapter hf --model-a Qwen/Qwen2.5-7B-Instruct \\
         --model-b microsoft/Phi-3.5-mini-instruct
 
+Grade a judge against human preferences before trusting it to rank anything::
+
+    caliper judge-card --adapter hf --judge-model meta-llama/Llama-3.3-70B-Instruct \\
+        --data examples/gold_preferences.jsonl
+
 Audit the benchmark itself — which items are unfair between model families::
 
     caliper dif --matrix matrix.csv --groups groups.csv
@@ -245,6 +250,58 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_judge_card(args: argparse.Namespace) -> int:
+    """Grade a judge against human labels before trusting it to rank models."""
+    from caliper.judge import PairwiseJudge, judge_report_card
+
+    rows = []
+    for line in Path(args.data).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+    if not rows:
+        _say(f"no comparisons found in {args.data}")
+        return 2
+    missing = [
+        key for key in ("prompt", "response_a", "response_b", "gold")
+        if key not in rows[0]
+    ]
+    if missing:
+        _say(f"each JSONL line needs keys prompt/response_a/response_b/gold; "
+             f"missing {missing}")
+        return 2
+
+    if args.adapter == "simulated":
+        # Demo mode: a judge with injectable pathologies, so the grading itself
+        # can be sanity-checked against known ground truth.
+        from caliper.adapters import SimulatedJudge
+
+        judge_adapter = SimulatedJudge(
+            accuracy=args.judge_accuracy,
+            position_bias=args.judge_position_bias,
+            verbosity_bias=args.judge_verbosity_bias,
+            seed=args.seed,
+        )
+    else:
+        judge_adapter = _build_adapter(args, model=args.judge_model)
+    judge = PairwiseJudge(judge_adapter, n_samples=args.judge_samples)
+    verdicts = []
+    for i, row in enumerate(rows, 1):
+        verdicts.append(
+            judge.compare(row["prompt"], row["response_a"], row["response_b"])
+        )
+        if i % 10 == 0 or i == len(rows):
+            _say(f"judged {i}/{len(rows)} comparisons")
+
+    card = judge_report_card(verdicts, [row["gold"] for row in rows],
+                             tie_band=args.tie_band)
+    payload = card.to_dict()
+    payload["judge_model"] = args.judge_model or judge.adapter.name
+    payload["disagreements"] = card.disagreements
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def cmd_duel(args: argparse.Namespace) -> int:
     from caliper.sequential import run_item_duel
 
@@ -438,6 +495,23 @@ def main(argv: list[str] | None = None) -> int:
     rag_parser.add_argument("--out", default=None,
                             help="directory for JSON + HTML report")
     rag_parser.set_defaults(func=cmd_rag)
+    card_parser = sub.add_parser(
+        "judge-card", help="grade a judge against human labels before trusting it"
+    )
+    add_adapter_args(card_parser)
+    card_parser.add_argument(
+        "--data", required=True,
+        help="JSONL with keys prompt, response_a, response_b, gold (A|B|tie)",
+    )
+    card_parser.add_argument("--judge-model", default="")
+    card_parser.add_argument("--judge-samples", type=int, default=3)
+    card_parser.add_argument("--tie-band", type=float, default=0.1)
+    # Demo-mode judge pathologies (--adapter simulated).
+    card_parser.add_argument("--judge-accuracy", type=float, default=0.9)
+    card_parser.add_argument("--judge-position-bias", type=float, default=0.0)
+    card_parser.add_argument("--judge-verbosity-bias", type=float, default=0.0)
+    card_parser.set_defaults(func=cmd_judge_card)
+
     duel_parser = sub.add_parser(
         "duel", help="anytime-valid head-to-head: stop as soon as a winner is clear"
     )

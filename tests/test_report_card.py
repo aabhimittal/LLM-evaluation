@@ -91,3 +91,56 @@ def test_empty_input_is_safe():
     card = judge_report_card([], [])
     assert card.n == 0
     assert card.grade.startswith("D")
+
+
+def _write_jsonl(path, n=10):
+    import json
+
+    prompts, resp_a, resp_b, gold = _comparisons(n, seed=5)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(
+            json.dumps({"prompt": p, "response_a": a, "response_b": b, "gold": g}) + "\n"
+            for p, a, b, g in zip(prompts, resp_a, resp_b, gold)
+        )
+
+
+def test_cli_judge_card(tmp_path, capsys):
+    import json
+
+    from caliper.cli import main
+
+    data = tmp_path / "gold.jsonl"
+    _write_jsonl(data)
+    rc = main([
+        "judge-card", "--adapter", "simulated", "--data", str(data),
+        "--judge-accuracy", "0.95", "--seed", "1",
+    ])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["n_comparisons"] == 10
+    assert payload["cohens_kappa"] > 0.5
+    assert payload["grade"].startswith("A")
+
+
+def test_cli_judge_card_rejects_bad_schema(tmp_path, capsys):
+    from caliper.cli import main
+
+    data = tmp_path / "bad.jsonl"
+    data.write_text('{"prompt": "hi", "gold": "A"}\n', encoding="utf-8")
+    assert main(["judge-card", "--adapter", "simulated", "--data", str(data)]) == 2
+
+
+def test_bundled_example_dataset_is_well_formed():
+    """The shipped example must stay loadable and correctly labeled."""
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "examples" / "gold_preferences.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    assert len(rows) >= 10
+    for row in rows:
+        assert set(row) == {"prompt", "response_a", "response_b", "gold"}
+        assert row["gold"] in ("A", "B", "tie")
+    # Labels must not be degenerate (all A or all B).
+    golds = {row["gold"] for row in rows}
+    assert len(golds) > 1
