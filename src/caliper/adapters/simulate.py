@@ -251,8 +251,8 @@ class SimulatedJudge(ModelAdapter):
         rng = _rng(self.seed, "judge", prompt, temperature, seed)
 
         q_toks = _tokens(question)
-        signal_a = len(_tokens(a) & q_toks) + 0.01 * len(_tokens(a))
-        signal_b = len(_tokens(b) & q_toks) + 0.01 * len(_tokens(b))
+        signal_a = _answer_quality(a, q_toks)
+        signal_b = _answer_quality(b, q_toks)
         truly_better = "A" if signal_a >= signal_b else "B"
 
         winner = truly_better if rng.random() < self.accuracy else (
@@ -263,6 +263,22 @@ class SimulatedJudge(ModelAdapter):
         if rng.random() < self.verbosity_bias:
             winner = "A" if len(a) > len(b) else "B"
         return f'{{"winner": "{winner}", "reason": "simulated verdict"}}'
+
+
+def _answer_quality(answer: str, question_tokens: set[str]) -> float:
+    """Stand-in for 'which answer is actually better'.
+
+    Combines how well the answer engages the question with how much distinct
+    content it brings. Overlap alone is a bad proxy — a terse wrong answer that
+    parrots the question ("the sky is blue because it reflects the ocean")
+    scores high on overlap while saying nothing.
+    """
+    tokens = _tokens(answer)
+    if not tokens:
+        return 0.0
+    coverage = len(tokens & question_tokens) / max(len(question_tokens), 1)
+    informativeness = min(len(tokens - question_tokens) / 30.0, 2.0)
+    return coverage + informativeness
 
 
 def _between(text: str, start: str, end: str) -> str:

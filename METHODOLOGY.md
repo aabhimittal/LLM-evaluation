@@ -87,6 +87,137 @@ interactions (e.g. a judge that only favors slot A for long responses). The audi
 exposes residual pathologies; a flip rate ≫ 0.1 on clear-cut pairs means get a better
 judge.
 
+## 2b. Judge report card (validation against gold labels)
+
+Raw agreement with humans is a misleading headline: if 70% of gold labels favor
+A, a judge that always answers A "agrees 70% of the time" while knowing nothing.
+`caliper.judge.report_card` reports instead:
+
+- **Cohen's κ** — agreement corrected for chance;
+- **accuracy on gold-decisive pairs** — ties excluded;
+- **excess bias** — the judge's rate of picking slot A, or the longer answer,
+  *minus the humans' rate*. Humans have a verbosity preference too; only the
+  excess is the judge's fault;
+- **confidence AUC** — does the judge's own vote agreement rank its correct
+  verdicts above its wrong ones? A confidently-wrong judge is worse than an
+  uncertain one;
+- a **letter grade**, downgraded one notch when the position-flip rate exceeds
+  25% — averaging may still recover the right ranking, but individual verdicts
+  are then unquotable.
+
+## 2c. Anytime-valid sequential duels
+
+**The problem.** Fixed-sample comparison says: run N items, compute a p-value,
+decide. In practice everyone watches results stream in and stops when the
+answer looks clear — which silently invalidates the p-value. The effect is not
+subtle: `tests/test_sequential.py` measures **~42% false positives** at a
+nominal 5% level when a z-test is recomputed after every observation.
+
+**The fix.** Bet instead of test. Wealth starts at `K_0 = 1`; each paired
+outcome `X_t ∈ [0,1]` (1 = A wins, 0.5 = tie, 0 = B wins) updates
+
+```
+K_t = K_{t-1} · (1 + λ_t (X_t − 0.5))
+```
+
+with `λ_t` **predictable** (a function of past data only). Under
+`H0: E[X] = 0.5` the wealth is a nonnegative martingale, so Ville's inequality
+gives
+
+```
+P( ∃t : K_t ≥ 1/α ) ≤ α
+```
+
+— simultaneously over all t. Peeking after every item and stopping at the first
+crossing is therefore exactly as valid as a fixed-N test. Two one-sided
+processes (one per direction) run at α/2 each, so the reported threshold is 2/α.
+
+**Betting rule.** `λ_t` follows a regularised aGRAPA: the running mean and
+variance are shrunk toward the null with pseudo-counts, and λ is truncated to
+[−1, 1]. Validity holds for *any* predictable λ, so these choices only affect
+power — but they matter enormously for it. An earlier truncation at 1.9 let a
+single early loss multiply wealth by 0.05, from which the process never
+recovered; the fix is documented in the module.
+
+**Confidence sequence.** The win rate carries a Robbins normal-mixture interval,
+valid uniformly in time (`sigma = 1/2` by Hoeffding's lemma for [0,1] variables).
+Verified empirically: uniform-in-time miscoverage ≤ 1.5% at a nominal 5%.
+
+**Pairing.** Both models see the same items in the same order, and concordant
+items (both right or both wrong) score 0.5 and leave wealth untouched — the
+sequential analogue of McNemar's test, where only discordant pairs carry
+information about which model is better.
+
+**Caveat.** Anytime-validity controls false positives, not sample size. Two
+genuinely similar models will simply never cross the threshold; the honest
+report is "inconclusive within the budget", which the CLI and Space both say.
+
+## 2d. Differential Item Functioning (auditing the benchmark)
+
+Every other section measures a model; this one measures the *benchmark*. An
+item shows **DIF** when two groups of **equal ability** have different chances
+of answering it correctly. In educational testing this is the standard method
+for finding culturally biased questions; pointed at LLM benchmarks it surfaces
+items that reward a training recipe, a tokenizer quirk, a formatting habit or
+plain contamination instead of the capability the benchmark claims to measure.
+
+**Estimator.** Mantel–Haenszel. Models are matched into ability strata, a
+2×2 table (group × correctness) is built per stratum, and the common odds ratio
+is tested:
+
+```
+alpha_MH = Σ_k (A_k D_k / T_k) / Σ_k (B_k C_k / T_k)
+chi2     = (|Σ A_k − Σ E[A_k]| − 0.5)² / Σ Var(A_k)
+```
+
+with A/B = reference correct/wrong and C/D = focal correct/wrong. Effect size
+uses the ETS delta scale `Δ = −2.35 ln(alpha_MH)`, **positive when the item
+favors the focal group**, classified A (|Δ|<1, negligible), B (1–1.5, moderate)
+or C (≥1.5, large), with B/C additionally requiring significance.
+
+Two corrections matter and are implemented:
+
+- **rest-score matching** — the studied item is excluded from its own matching
+  criterion, otherwise a biased item contaminates the ability it is matched on
+  and its own effect attenuates;
+- **two-stage purification** — the ability scale is rebuilt from items the first
+  pass judged clean, so a handful of biased items cannot skew everything else.
+
+Perfect separation (a group that never gets an item right) is handled with a
+Haldane–Anscombe correction, and the χ² is computed independently of the odds
+ratio so separation cannot hide a real effect.
+
+**Validated behaviour** (`tests/test_dif.py`): with 8 rigged items among 80,
+the auditor recovers the majority of them with few false alarms, and — the test
+that matters — a focal group that is simply **stronger overall** produces no
+flags, because ability matching absorbs the gap.
+
+**Caveat.** MH needs many respondents (dozens of models per group) for power,
+and matching on observed score is imperfect at the extremes. Flags are
+hypotheses to inspect, not verdicts.
+
+## 2e. Benchmark saturation and power
+
+**Test information.** `I(θ) = Σ_i I_i(θ)`, and `SE(θ) = 1/√I(θ)`. Passing a
+`test_length` sums only the most informative items at each ability — what an
+adaptive test of that length actually achieves, which is the only honest basis
+for a saturation claim.
+
+**Saturation ceiling.** The ability above which `SE(θ) > se_target`. Above that
+line, models cannot be told apart by this bank and reported differences between
+them are noise. A boundary that coincides with the edge of the scanned range is
+reported as "no ceiling found", not as a ceiling.
+
+**Power.** The smallest detectable ability gap follows the two-sample formula
+on the IRT scale: `Δ = (z_{1−α/2} + z_{power}) · √(SE_A² + SE_B²)`.
+For the bundled 250-item bank at 40 items per model this is **1.23 logits** —
+i.e. this bank cannot certify small differences at all, no matter how the
+scores are reported.
+
+**Adaptive efficiency.** Information from Fisher-information selection versus
+random sampling, expressed as the number of random items one adaptive item is
+worth (≈2.5× on the bundled bank at θ=0).
+
 ## 3. Metamorphic robustness
 
 A meaning-preserving transformation of the input should not change the answer.

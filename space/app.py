@@ -19,13 +19,20 @@ import gradio as gr
 import numpy as np
 
 from caliper.adapters import SimulatedJudge, SimulatedRAGSubject, SimulatedSubject
-from caliper.irt import run_adaptive
-from caliper.judge import PairwiseJudge
+from caliper.diagnostics import (
+    adaptive_efficiency,
+    bank_health,
+    minimum_detectable_difference,
+)
+from caliper.dif import detect_dif
+from caliper.irt import p_correct, run_adaptive
+from caliper.judge import PairwiseJudge, judge_report_card
 from caliper.rag import RagBank, evaluate_rag
 from caliper.report import render_html, render_rag_html, run_fingerprint
 from caliper.report.html import _line_chart, _radar_svg
 from caliper.robustness import evaluate_robustness
 from caliper.robustness.perturb import PERTURBATIONS
+from caliper.sequential import run_item_duel
 from caliper.types import ItemBank
 
 BANK = ItemBank.bundled()
@@ -77,7 +84,7 @@ def _wrap_svg(svg: str) -> str:
 # ---------------------------------------------------------------- adaptive
 
 def ui_adaptive(mode, model_id, token, theta, robustness, skew, contaminated,
-                max_items, progress=gr.Progress()):
+                max_items, progress=gr.Progress()):  # noqa: B008
     try:
         adapter = _subject(mode, model_id, token, theta, robustness, skew, contaminated)
     except Exception as e:  # noqa: BLE001
@@ -134,7 +141,7 @@ def ui_judge(mode, judge_model, token, prompt, resp_a, resp_b,
     judge = PairwiseJudge(adapter, n_samples=3)
     try:
         verdict = judge.compare(prompt, resp_a, resp_b)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise gr.Error(f"Judge call failed: {e}") from e
     flip_note = (
         "⚠️ verdict FLIPPED when response order was swapped — do not trust a "
@@ -166,11 +173,13 @@ def ui_robustness(mode, model_id, token, theta, robustness, skew, contaminated, 
     try:
         adapter = _subject(mode, model_id, token, theta, robustness, skew, contaminated)
         report = evaluate_robustness(adapter, BANK, n_items=int(n_items), seed=0)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise gr.Error(f"Robustness run failed: {e}") from e
     lines = [
-        f"### Consistency: **{report.overall_consistency:.2f}** "
-        f"(95% CI {report.ci95[0]:.2f} – {report.ci95[1]:.2f}, {report.n_items} items)",
+        (
+            f"### Consistency: **{report.overall_consistency:.2f}** "
+            f"(95% CI {report.ci95[0]:.2f} – {report.ci95[1]:.2f}, {report.n_items} items)"
+        ),
         "",
         "| perturbation | consistency |",
         "|---|---|",
@@ -192,18 +201,18 @@ def ui_robustness(mode, model_id, token, theta, robustness, skew, contaminated, 
 # ---------------------------------------------------------------- fingerprint
 
 def ui_fingerprint(mode, model_id, token, theta, robustness, skew, contaminated,
-                   progress=gr.Progress()):
+                   progress=gr.Progress()):  # noqa: B008
     try:
         adapter = _subject(mode, model_id, token, theta, robustness, skew, contaminated)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise gr.Error(str(e)) from e
     live = not mode.startswith("Demo")
-    budgets = dict(
-        adaptive_max_items=25 if live else 40,
-        robustness_items=5 if live else 10,
-        calibration_items=15 if live else 30,
-        contamination_items=6 if live else 12,
-    )
+    budgets = {
+        "adaptive_max_items": 25 if live else 40,
+        "robustness_items": 5 if live else 10,
+        "calibration_items": 15 if live else 30,
+        "contamination_items": 6 if live else 12,
+    }
     stages = ["adaptive ability", "robustness", "calibration", "contamination"]
     stage_iter = iter(np.linspace(0.1, 0.9, len(stages)))
 
@@ -215,7 +224,7 @@ def ui_fingerprint(mode, model_id, token, theta, robustness, skew, contaminated,
 
     try:
         fp = run_fingerprint(adapter, BANK, seed=0, progress=report_progress, **budgets)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise gr.Error(f"Fingerprint run failed: {e}") from e
 
     radar = _wrap_svg(_radar_svg(fp.dimensions()))
@@ -243,7 +252,7 @@ def ui_fingerprint(mode, model_id, token, theta, robustness, skew, contaminated,
 # ---------------------------------------------------------------- rag
 
 def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, ctx_reliance,
-           ver_se, ver_sp, n_samples, progress=gr.Progress()):
+           ver_se, ver_sp, n_samples, progress=gr.Progress()):  # noqa: B008
     if mode.startswith("Demo"):
         adapter = SimulatedRAGSubject(
             hallucination_rate=halluc, answer_relevance=ans_rel,
@@ -271,7 +280,7 @@ def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, ctx_reliance,
         report = evaluate_rag(adapter, RAG_BANK, n_samples=n, seed=0,
                               n_boot=300, with_audit=True, with_attribution=True,
                               progress=report_progress)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise gr.Error(f"RAG run failed: {e}") from e
 
     f_lo, f_hi = report.faithfulness_ci95
@@ -324,6 +333,310 @@ def ui_rag(mode, model_id, token, halluc, ans_rel, ctx_prec, ctx_reliance,
         f'srcdoc="{html_report.replace("&", "&amp;").replace(chr(34), "&quot;")}"></iframe>'
     )
     return summary, iframe
+# ---------------------------------------------------------------- report card
+
+_GOLD_SET = [
+    (
+        "Explain why the sky is blue in two sentences.",
+        (
+            "Sunlight scatters off air molecules, and short-wavelength blue light "
+            "scatters far more than red (Rayleigh scattering), so the light arriving "
+            "from all over the sky is dominated by blue."
+        ),
+        "The sky is blue because it reflects the ocean.",
+    ),
+    (
+        "What causes ocean tides?",
+        (
+            "Tides come from the Moon's gravitational gradient across the Earth, "
+            "raising bulges on the near and far sides; the Earth rotates through both, "
+            "giving roughly two high tides a day."
+        ),
+        "Tides happen because wind pushes the water around.",
+    ),
+    (
+        "Explain the difference between correlation and causation.",
+        (
+            "Correlation means two variables move together; causation means changing "
+            "one changes the other. Ice-cream sales correlate with drownings, but the "
+            "common cause is hot weather."
+        ),
+        "Correlation and causation are basically the same thing.",
+    ),
+    (
+        "Why does ice float on water?",
+        (
+            "Hydrogen bonding locks water into an open hexagonal lattice on freezing, "
+            "making ice about 9% less dense than the liquid, so it floats and lakes "
+            "freeze from the top down."
+        ),
+        "Ice floats because cold things weigh less.",
+    ),
+    (
+        "What is the greenhouse effect?",
+        (
+            "Greenhouse gases pass incoming shortwave sunlight but absorb and re-emit "
+            "outgoing longwave infrared, so energy leaves more slowly and the surface "
+            "settles at a warmer equilibrium."
+        ),
+        "It is when the Earth gets hotter because of pollution.",
+    ),
+    (
+        "Explain how a vaccine trains the immune system.",
+        (
+            "A vaccine presents an antigen without causing disease; B and T cells that "
+            "recognise it expand and leave long-lived memory cells that respond much "
+            "faster on real exposure."
+        ),
+        "Vaccines put a bit of the illness in you so you get a little sick.",
+    ),
+    (
+        "Why is the base-rate fallacy dangerous in medical testing?",
+        (
+            "When a disease is rare, the large healthy population produces more false "
+            "positives than the small sick population produces true positives, so a "
+            "positive result needs Bayes' rule and the prevalence."
+        ),
+        "It is dangerous because doctors sometimes misread tests.",
+    ),
+    (
+        "Explain what an index does in a relational database.",
+        (
+            "An index is usually a B-tree mapping column values to row locations, "
+            "turning a full scan into a logarithmic lookup, at the cost of extra "
+            "storage and slower writes."
+        ),
+        "An index makes the database faster when you search.",
+    ),
+]
+
+
+def ui_report_card(mode, judge_model, token, accuracy, position_bias, verbosity_bias):
+    """Grade a judge against human labels — the only honest way to trust one."""
+    if mode.startswith("Demo"):
+        adapter = SimulatedJudge(
+            accuracy=accuracy, position_bias=position_bias,
+            verbosity_bias=verbosity_bias, seed=0,
+        )
+    else:
+        if not judge_model.strip():
+            raise gr.Error("Enter a judge model id for live mode.")
+        from caliper.adapters.hf_inference import HFInferenceAdapter
+
+        adapter = HFInferenceAdapter(model=judge_model.strip(),
+                                     token=token.strip() or None)
+
+    rng = np.random.default_rng(7)
+    judge = PairwiseJudge(adapter, n_samples=3)
+    verdicts, gold = [], []
+    try:
+        for prompt, good, bad in _GOLD_SET:
+            a_is_good = bool(rng.random() < 0.5)
+            verdicts.append(judge.compare(
+                prompt, good if a_is_good else bad, bad if a_is_good else good
+            ))
+            gold.append("A" if a_is_good else "B")
+    except Exception as e:
+        raise gr.Error(f"Judge call failed: {e}") from e
+
+    card = judge_report_card(verdicts, gold)
+    rows = "\n".join(
+        f"| {row['prompt'][:52]}… | {row['judge']} | {row['gold']} | "
+        f"{row['judge_confidence']:.2f} |"
+        for row in card.disagreements[:6]
+    )
+    disagreement_table = (
+        "\n\n**Where it disagreed with the humans**\n\n"
+        "| prompt | judge | human | judge confidence |\n|---|---|---|---|\n" + rows
+        if rows else "\n\n*No disagreements with the human labels.*"
+    )
+    return (
+        f"## {card.grade}\n\n"
+        f"| metric | value | why it matters |\n|---|---|---|\n"
+        f"| raw agreement | {card.accuracy:.2f} | inflated by the label base rate — "
+        "never quote this alone |\n"
+        f"| **Cohen's κ** | **{card.kappa:+.2f}** | agreement after removing chance; "
+        "the number that counts |\n"
+        f"| excess position bias | {card.excess_position_bias:+.2f} | judge's "
+        "slot-A preference *beyond* the humans' |\n"
+        f"| excess verbosity bias | {card.excess_verbosity_bias:+.2f} | judge's "
+        "preference for longer answers *beyond* the humans' |\n"
+        f"| confidence AUC | {card.confidence_auc:.2f} | does its own confidence "
+        "rank its correct calls above its wrong ones? |\n"
+        f"| position-flip rate | {card.position_flip_rate:.2f} | how often the "
+        "verdict reverses when A and B swap seats |\n"
+        + disagreement_table
+    )
+
+
+# ---------------------------------------------------------------- duel
+
+def ui_duel(mode, model_id, token, theta, robustness, skew, contaminated,
+            theta_b, alpha, max_items):
+    """Anytime-valid head-to-head, streaming after every item."""
+    if mode.startswith("Demo"):
+        adapter_a = SimulatedSubject(theta=theta, bank=BANK, robustness=robustness,
+                                     calibration_skew=skew, seed=0,
+                                     name=f"A (θ={theta:+.1f})")
+        adapter_b = SimulatedSubject(theta=theta_b, bank=BANK, seed=1,
+                                     name=f"B (θ={theta_b:+.1f})")
+    else:
+        ids = [m.strip() for m in model_id.split(",")]
+        if len(ids) != 2:
+            yield gr.skip(), (
+                "**Live duel needs two model ids** — put both in the model box, "
+                "comma separated (`org/model-a, org/model-b`)."
+            ), gr.skip()
+            return
+        from caliper.adapters.hf_inference import HFInferenceAdapter
+
+        adapter_a = HFInferenceAdapter(model=ids[0], token=token.strip() or None)
+        adapter_b = HFInferenceAdapter(model=ids[1], token=token.strip() or None)
+
+    rates, bands = [], []
+    last = None
+    try:
+        for state in run_item_duel(
+            adapter_a, adapter_b, BANK,
+            alpha=float(alpha), max_items=int(max_items), seed=0,
+        ):
+            rates.append((state.step, state.win_rate))
+            bands.append((state.step, state.ci95[0], state.ci95[1]))
+            last = state
+            if state.step % 3 == 0 or state.decided:
+                chart = _line_chart(
+                    rates, bands,
+                    x_label="items", y_label="P(A wins)",
+                    y_range=(0.0, 1.0), aria="Paired win rate with confidence sequence",
+                )
+                lo, hi = state.ci95
+                verdict = (
+                    f"### 🏆 Decided at item {state.step}: **{adapter_a.name if state.winner == 'A' else adapter_b.name}**\n"
+                    f"Stopped early — and the {int((1 - float(alpha)) * 100)}% guarantee still holds."
+                    if state.decided else
+                    f"### Running — item {state.step}\nNo winner yet; keep going."
+                )
+                status = (
+                    f"{verdict}\n\n"
+                    f"- paired win rate for A: **{state.win_rate:.3f}** "
+                    f"(confidence sequence [{lo:.2f}, {hi:.2f}])\n"
+                    f"- evidence for A: **{state.e_value_a:,.1f}** · "
+                    f"evidence for B: **{state.e_value_b:,.1f}** "
+                    f"(threshold {2 / float(alpha):,.0f})\n"
+                    f"- ties so far carry no evidence — only items one model got "
+                    "right and the other got wrong move the needle"
+                )
+                yield _wrap_svg(chart), status, gr.skip()
+    except Exception as e:  # noqa: BLE001
+        yield gr.skip(), f"**Duel failed:** {e}", gr.skip()
+        return
+
+    if last is None:
+        yield gr.skip(), "**No items were administered.**", gr.skip()
+        return
+    yield gr.skip(), gr.skip(), {
+        "models": {"A": adapter_a.name, "B": adapter_b.name},
+        "items_used": last.step,
+        "win_rate_a": round(last.win_rate, 4),
+        "confidence_sequence_95": [round(x, 4) for x in last.ci95],
+        "e_value_a": round(last.e_value_a, 3),
+        "e_value_b": round(last.e_value_b, 3),
+        "decided": last.decided,
+        "winner": (
+            adapter_a.name if last.winner == "A"
+            else adapter_b.name if last.winner == "B" else None
+        ),
+        "note": (
+            "Peeking after every single item is safe here: the e-process "
+            "controls type-I error under any stopping rule."
+        ),
+    }
+
+
+# ---------------------------------------------------------------- diagnostics
+
+def ui_diagnose(se_target, test_length, theta):
+    test_length = int(test_length) if test_length else None
+    health = bank_health(BANK, se_target=float(se_target), test_length=test_length)
+    power = minimum_detectable_difference(
+        BANK, n_items=test_length or 40, theta=float(theta)
+    )
+    efficiency = adaptive_efficiency(
+        BANK, theta=float(theta), n_items=test_length or 30
+    )
+    curve = [(row["theta"], row["se"]) for row in health.curve]
+    chart = _line_chart(
+        curve, None, x_label="ability θ", y_label="standard error",
+        y_range=(0.0, min(1.5, max(s for _, s in curve) * 1.1)),
+        aria="Standard error across the ability scale",
+    )
+    text = (
+        f"### {health.verdict}\n\n"
+        f"| | |\n|---|---|\n"
+        f"| items in bank | {health.n_items} |\n"
+        f"| test length assumed | {test_length or 'whole bank'} |\n"
+        f"| best achievable SE | {health.best_se:.3f} at θ {health.peak_theta:+.2f} |\n"
+        f"| usable θ range (SE ≤ {health.se_target}) | "
+        f"{health.usable_range if health.usable_range else 'none'} |\n"
+        f"| smallest detectable θ gap | {power.minimum_detectable_difference:.2f} logits |\n"
+        f"| adaptive efficiency | {efficiency['efficiency_ratio']:.2f}× per item |\n\n"
+        f"{power.interpretation}\n\n{efficiency['interpretation']}"
+    )
+    return _wrap_svg(chart), text
+
+
+# ---------------------------------------------------------------- DIF
+
+def ui_dif(n_models, n_items, n_dif, dif_strength, focal_advantage, seed):
+    """Simulate two model families, inject item bias, and try to catch it."""
+    rng = np.random.default_rng(int(seed))
+    n_models, n_items, n_dif = int(n_models), int(n_items), int(n_dif)
+    half = n_models // 2
+    groups = np.array([0] * half + [1] * (n_models - half))
+    theta = np.where(
+        groups == 1,
+        rng.normal(float(focal_advantage), 1, n_models),
+        rng.normal(0.0, 1, n_models),
+    )
+    a = rng.lognormal(0, 0.3, n_items)
+    b = rng.normal(0, 1, n_items)
+    c = np.full(n_items, 0.25)
+    P = p_correct(theta[:, None], a[None, :], b[None, :], c[None, :])
+    injected = {int(j) for j in rng.choice(n_items, n_dif, replace=False)}
+    for j in injected:
+        P[groups == 1, j] = p_correct(
+            theta[groups == 1], a[j], b[j] - float(dif_strength), c[j]
+        )
+    X = (rng.random(P.shape) < P).astype(float)
+
+    report = detect_dif(X, groups, BANK, n_strata=5,
+                        reference_name="family X", focal_name="family Y")
+    flagged = {it.index for it in report.flagged}
+    hits = len(flagged & injected)
+    false_alarms = len(flagged - injected)
+
+    lines = [
+        (
+            f"### Injected {len(injected)} biased items · caught **{hits}** · "
+            f"false alarms **{false_alarms}** (of {n_items - len(injected)} clean items)"
+        ),
+        "",
+        (
+            f"Family Y is genuinely stronger (mean θ {float(focal_advantage):+.1f}). "
+            "That ability gap alone must **not** register as bias — only items where "
+            "the gap survives ability matching are flagged."
+        ),
+        "",
+        "| item | ETS Δ | class | favors | p | acc X | acc Y | truly biased |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for it in report.worst(12):
+        lines.append(
+            f"| `{it.item_id[:26]}` | {it.delta:+.2f} | {it.classification} | "
+            f"{it.favors} | {it.p_value:.4f} | {it.p_reference:.2f} | "
+            f"{it.p_focal:.2f} | {'✅ yes' if it.index in injected else '—'} |"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- layout
@@ -333,9 +646,12 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
         "# 🔬 Caliper — measurement-science evaluation for LLMs\n"
         "Point estimates lie. Caliper measures models the way psychometrics measures "
         "people: **adaptive IRT ability estimation** with confidence intervals, "
+        "**anytime-valid model duels** that stop the moment a winner is clear, "
         "**bias-audited LLM-as-judge**, **metamorphic robustness**, **confidence "
-        "calibration** and **contamination probes** — every number with its "
-        "uncertainty. [Source & methodology](https://github.com/aabhimittal/LLM-evaluation)"
+        "calibration**, **contamination probes** — and diagnostics for the "
+        "*benchmark itself*: saturation ceilings and per-item fairness between "
+        "model families. Every number with its uncertainty. "
+        "[Source & methodology](https://github.com/aabhimittal/LLM-evaluation)"
     )
     with gr.Accordion("Model under test", open=True):
         mode = gr.Radio(
@@ -419,6 +735,24 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
             outputs=[judge_summary, judge_votes],
         )
 
+        gr.Markdown("---\n### Report card — should you trust this judge at all?")
+        gr.Markdown(
+            "\"Our judge agrees with humans 80% of the time\" is a meaningless "
+            "headline: on a 70/30 split, a judge that always answers *A* scores "
+            "70% while knowing nothing. This grades the judge on a set of "
+            "human-labelled comparisons using chance-corrected agreement, bias "
+            "**in excess of the humans' own**, and whether its confidence "
+            "actually tracks its correctness."
+        )
+        card_button = gr.Button("Grade this judge against human labels")
+        card_out = gr.Markdown()
+        card_button.click(
+            ui_report_card,
+            inputs=[mode, judge_model, token, accuracy, position_bias,
+                    verbosity_bias],
+            outputs=[card_out],
+        )
+
     with gr.Tab("🌀 Robustness"):
         gr.Markdown(
             "**Metamorphic testing**: the same question under meaning-preserving "
@@ -500,6 +834,86 @@ with gr.Blocks(title="Caliper — LLM measurement lab") as demo:
             inputs=[mode, model_id, token, rag_halluc, rag_ans_rel, rag_ctx_prec,
                     rag_ctx_reliance, rag_ver_se, rag_ver_sp, rag_n],
             outputs=[rag_summary, rag_iframe],
+        )
+
+    with gr.Tab("⚔️ Sequential duel"):
+        gr.Markdown(
+            "Two models, same items, **stop the moment the winner is clear**.\n\n"
+            "Fixed-N evaluation wastes calls when the answer arrives early — and "
+            "peeking at a p-value as results stream in inflates false positives to "
+            "~40%. This uses an **e-process**: wealth starts at 1 and is bet on "
+            "each item; by Ville's inequality the type-I error stays ≤ α *under "
+            "any stopping rule*. Watch after every item, stop whenever you like, "
+            "the guarantee holds."
+        )
+        with gr.Row():
+            theta_b = gr.Slider(-2.5, 2.5, value=-1.2, step=0.1,
+                                label="Demo: ability θ of model B")
+            duel_alpha = gr.Slider(0.01, 0.2, value=0.05, step=0.01, label="α")
+            duel_max = gr.Slider(20, 250, value=200, step=10, label="Item budget")
+        gr.Markdown(
+            "*Live mode: put **two** comma-separated model ids in the model box "
+            "above.*", elem_classes=["small-note"],
+        )
+        duel_button = gr.Button("Run sequential duel", variant="primary")
+        duel_chart = gr.HTML()
+        duel_status = gr.Markdown()
+        duel_json = gr.JSON(label="Final verdict")
+        duel_button.click(
+            ui_duel,
+            inputs=subject_inputs + [theta_b, duel_alpha, duel_max],
+            outputs=[duel_chart, duel_status, duel_json],
+        )
+
+    with gr.Tab("🩺 Benchmark diagnostics"):
+        gr.Markdown(
+            "Every other tab measures a *model*. This one measures the "
+            "**benchmark**: where on the ability scale can it still tell models "
+            "apart, how small a difference can it detect, and is adaptive "
+            "selection actually paying off? Above the saturation ceiling, "
+            "reported differences between frontier models are noise."
+        )
+        with gr.Row():
+            diag_se = gr.Slider(0.1, 0.6, value=0.3, step=0.05,
+                                label="Target standard error")
+            diag_len = gr.Slider(0, 250, value=40, step=5,
+                                 label="Test length (0 = whole bank)")
+            diag_theta = gr.Slider(-2.0, 2.5, value=0.0, step=0.1,
+                                   label="Ability of interest θ")
+        diag_button = gr.Button("Diagnose the benchmark", variant="primary")
+        diag_chart = gr.HTML()
+        diag_text = gr.Markdown()
+        diag_button.click(ui_diagnose, inputs=[diag_se, diag_len, diag_theta],
+                          outputs=[diag_chart, diag_text])
+
+    with gr.Tab("🔎 Item bias (DIF)"):
+        gr.Markdown(
+            "**Differential Item Functioning** asks whether an item is unfair "
+            "between two model families *at matched ability* — the standard "
+            "psychometric tool for finding culturally biased exam questions, "
+            "pointed at LLM benchmarks. Items that reward a training recipe, a "
+            "tokenizer quirk or plain contamination show up here.\n\n"
+            "Below, family Y is made genuinely stronger **and** a few items are "
+            "secretly rigged in its favour. A correct auditor catches the rigged "
+            "items without flagging the honest ability gap."
+        )
+        with gr.Row():
+            dif_models = gr.Slider(40, 200, value=100, step=10, label="Models")
+            dif_items = gr.Slider(20, 150, value=80, step=10, label="Items")
+            dif_count = gr.Slider(0, 20, value=8, step=1, label="Rigged items")
+        with gr.Row():
+            dif_strength = gr.Slider(0.5, 3.0, value=1.5, step=0.1,
+                                     label="Bias strength (logits)")
+            dif_advantage = gr.Slider(0.0, 2.0, value=0.8, step=0.1,
+                                      label="Family Y's real ability edge")
+            dif_seed = gr.Slider(0, 50, value=4, step=1, label="Seed")
+        dif_button = gr.Button("Audit the item bank", variant="primary")
+        dif_out = gr.Markdown()
+        dif_button.click(
+            ui_dif,
+            inputs=[dif_models, dif_items, dif_count, dif_strength,
+                    dif_advantage, dif_seed],
+            outputs=[dif_out],
         )
 
     gr.Markdown(
